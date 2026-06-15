@@ -107,7 +107,7 @@ max(a, b)</code></pre>
   <h3>Operators</h3>
   <table>
     <tr><th>Group</th><th>Python</th><th>Rust</th><th>Notes</th></tr>
-    <tr><td>Arithmetic</td><td colspan="2"><code>+ - * / %</code></td><td>int <code>/</code> truncates; mixing a float promotes to float</td></tr>
+    <tr><td>Arithmetic</td><td colspan="2"><code>+ - * / %</code> (and <code>//</code>)</td><td>on integers, <code>/</code> and <code>//</code> both truncate toward zero; a float operand promotes to float division. There is no separate float floor-div.</td></tr>
     <tr><td>Comparison</td><td colspan="2"><code>== != &lt; &lt;= &gt; &gt;=</code></td><td>Python allows chaining (<code>a &lt; b &lt; c</code>)</td></tr>
     <tr><td>Boolean</td><td><code>and</code>, <code>or</code>, <code>not</code></td><td><code>&amp;&amp;</code>, <code>||</code>, <code>!</code></td><td>short-circuiting</td></tr>
     <tr><td>Unary</td><td colspan="2"><code>-x</code>, <code>not x</code> / <code>!x</code></td><td></td></tr>
@@ -184,8 +184,16 @@ curl -X POST 'http://100.x.y.z/run?lang=rs&amp;timeout=10' --data 'uptime_ms / 1
 
 # GET (also supported): code is URL-encoded in the query.
 curl 'http://100.x.y.z/run?lang=py&amp;timeout=10&amp;code=free_heap%20%3E%20100000'   # → true</code></pre>
-  <p><code>timeout</code> is in seconds, clamped to 1–30, and enforced as a real wall-clock deadline on
+  <p><code>timeout</code> is in seconds, clamped to 1–60, and enforced as a real wall-clock deadline on
   the device. The single request must fit one TCP segment (≈1.2 kB) — POST leaves more of that for code.</p>
+
+  <h3>Response format</h3>
+  <p>The reply is <code>text/plain</code> (no JSON wrapper):</p>
+  <table>
+    <tr><th>Outcome</th><th>Body</th></tr>
+    <tr><td>Success</td><td>the raw value — <code>true</code>/<code>false</code>, an integer, a float, or a list like <code>[1, 2, 3]</code></td></tr>
+    <tr><td>Failure</td><td>a line starting with <code>error:</code> — e.g. <code>error: parse error: unexpected end of input</code>, <code>error: unknown name `foo`</code>, or <code>error: program exceeded its time limit</code></td></tr>
+  </table>
 </section>
 
 <section>

@@ -137,6 +137,9 @@ fn lex(src: &str) -> Result<Vec<Tok>, DslError> {
                     ">=" => Some(Tok::Ge),
                     "&&" => Some(Tok::AndAnd),
                     "||" => Some(Tok::OrOr),
+                    // Python floor-division `//`: integer `/` already truncates,
+                    // so accept `//` as an alias rather than rejecting it.
+                    "//" => Some(Tok::Slash),
                     _ => None,
                 };
                 if let Some(t) = tok {
@@ -546,6 +549,8 @@ mod tests {
         assert_eq!(run_py("sum([1, 2, 3])", &env), Value::Int(6));
         assert_eq!(run_py("[10, 20, 30][-1]", &env), Value::Int(30));
         assert_eq!(run_py("max(uptime_s, 100)", &env), Value::Int(100));
+        // `//` accepted as an alias for integer `/` (both truncate on ints).
+        assert_eq!(run_py("7 // 2", &env), Value::Int(3));
     }
 
     #[test]

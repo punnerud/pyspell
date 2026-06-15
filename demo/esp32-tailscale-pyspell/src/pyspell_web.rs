@@ -40,7 +40,7 @@ fn run(method: &str, query: &str, body: &[u8]) -> String {
         "rs" | "rust" => Lang::Rust,
         _ => Lang::Python,
     };
-    let timeout_s = query_get(query, "timeout").parse::<i64>().unwrap_or(10).clamp(1, 30);
+    let timeout_s = query_get(query, "timeout").parse::<i64>().unwrap_or(10).clamp(1, 60);
     // POST → the raw request body is the program; GET → the URL-encoded `code` param.
     let code = if method.eq_ignore_ascii_case("POST") {
         String::from_utf8_lossy(body).trim().to_string()
