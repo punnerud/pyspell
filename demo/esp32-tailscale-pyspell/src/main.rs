@@ -214,14 +214,15 @@ fn main() -> Result<()> {
     // fetch_json is kept OFF this pool (local_server rejects it) so a thin stack never
     // hits mbedTLS and overflows — fetches go via the in-tunnel server (esp-idf TLS is
     // single-at-a-time anyway). So: 8 parallel COMPUTE on the demo + full tailscale.
-    #[cfg(feature = "pyspell")]
-    {
-        const N_WORKERS: usize = 8;
-        const WORKER_STACK: usize = 12 * 1024;
-        let _ = std::thread::Builder::new()
-            .stack_size(4 * 1024)
-            .spawn(|| local_server::run(N_WORKERS, WORKER_STACK));
-    }
+    // The parallel PySpell worker pool is DISABLED: on this chip it prevents stable
+    // "green" online status. Green = the control-plane /machine/map long-poll staying
+    // open; the pool's worker stacks (~96 kB) + its burst socket use starve the heap
+    // and sockets that the map-poll reconnect (Noise + h2) needs, so the node never
+    // holds the poll → never green. The map-poll/green code is unchanged and held green
+    // before the pool. Parallel PySpell belongs on the lean esp-rs stack (separate,
+    // more headroom). To re-enable for experiments, restore local_server::run(...) here.
+    // #[cfg(feature = "pyspell")]
+    // { local_server::run(8, 12 * 1024) spawned after a 15 s delay — see git history }
 
     // subnet-router/exit-node: enable NAPT on the STA netif (data-path foundation;
     // the WG-netif bridge is the remaining deep work — see router.rs).

@@ -34,13 +34,11 @@ pub fn run(n_workers: usize, worker_stack: usize) {
         }
     };
 
-    // RENDEZVOUS channel (capacity 0): the acceptor only accept()s the next connection
-    // once a worker takes the current one. An UNBOUNDED queue would accept every burst
-    // connection immediately — and each accepted TcpStream holds an LWIP socket while it
-    // waits — which starved tailscale's DERP socket (10/16-socket pool is shared). With
-    // rendezvous, the pool holds at most ~N_WORKERS+1 sockets; the rest wait in the
-    // listener backlog (no socket fd), reserving the remaining sockets for tailscale.
-    let (tx, rx) = mpsc::sync_channel::<TcpStream>(0);
+    // Accept the burst fast (a rendezvous channel made the 8 simultaneous connections
+    // overflow the listen backlog → timeouts). Socket EXHAUSTION is instead handled by
+    // SO_LINGER=0 on each connection (freed immediately on close, no TIME_WAIT pile-up),
+    // so an 8-burst holds ~8 sockets only momentarily and tailscale keeps its share.
+    let (tx, rx) = mpsc::channel::<TcpStream>();
     let rx = Arc::new(Mutex::new(rx));
     for i in 0..n_workers {
         let rx = Arc::clone(&rx);
@@ -79,6 +77,12 @@ fn handle(id: usize, mut stream: TcpStream) {
     // Short read timeout: a connection stalled by a transient socket-pool peak frees
     // its worker quickly (instead of blocking it ~15 s), so the pool recovers fast.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(6)));
+    // SO_LINGER=0: close() sends RST instead of FIN, so the socket is freed IMMEDIATELY
+    // rather than sitting in TIME_WAIT (~minutes) holding an LWIP fd. Under a burst of
+    // short request/response connections, TIME_WAIT fds otherwise pile up and starve
+    // tailscale's sockets (online poll + DERP). The response is written+flushed before
+    // close, so the RST loses no data.
+    set_linger_zero(&stream);
 
     // Read until the header terminator.
     let mut buf: Vec<u8> = Vec::with_capacity(2048);
@@ -155,4 +159,26 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
     hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Set SO_LINGER=0 so the socket is freed immediately on close (RST, no TIME_WAIT).
+/// Done via the raw fd + lwIP setsockopt (esp-idf's std lacks a stable `set_linger`).
+fn set_linger_zero(stream: &TcpStream) {
+    use std::os::fd::AsRawFd;
+    // lwIP socket option values (sockets.h): SOL_SOCKET=0xfff, SO_LINGER=0x0080.
+    const SOL_SOCKET_LWIP: i32 = 0x0fff;
+    const SO_LINGER_LWIP: i32 = 0x0080;
+    let l = esp_idf_svc::sys::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    unsafe {
+        esp_idf_svc::sys::lwip_setsockopt(
+            stream.as_raw_fd(),
+            SOL_SOCKET_LWIP,
+            SO_LINGER_LWIP,
+            &l as *const _ as *const core::ffi::c_void,
+            core::mem::size_of::<esp_idf_svc::sys::linger>() as esp_idf_svc::sys::socklen_t,
+        );
+    }
 }
