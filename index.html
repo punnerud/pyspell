@@ -101,6 +101,7 @@ max(a, b)</code></pre>
     <tr><td>Integer</td><td><code>0</code>, <code>42</code>, <code>-7</code></td><td>64-bit signed</td></tr>
     <tr><td>Float</td><td><code>1.5</code>, <code>3.14</code></td><td>64-bit</td></tr>
     <tr><td>Boolean</td><td><code>true</code>/<code>True</code>, <code>false</code>/<code>False</code></td><td>both spellings accepted</td></tr>
+    <tr><td>String</td><td><code>"hello"</code>, <code>'oslo'</code></td><td><code>+</code> concatenates; <code>==</code>/<code>&lt;</code> compare; <code>len()</code> counts chars</td></tr>
     <tr><td>List</td><td><code>[1, 2, 3]</code></td><td>elements are values</td></tr>
   </table>
 
@@ -141,7 +142,27 @@ max(a, b)</code></pre>
     <tr><td><code>before(list, a, b)</code></td><td>bool</td><td>true if <code>a</code> occurs before <code>b</code></td></tr>
     <tr><td><code>first(list)</code></td><td>value</td><td>first element, or <code>-1</code> if empty</td></tr>
     <tr><td><code>last(list)</code></td><td>value</td><td>last element, or <code>-1</code> if empty</td></tr>
+    <tr><td><code>str(x)</code></td><td>string</td><td>string representation of a value</td></tr>
+    <tr><td><code>json_get(text, "a.b.0.c")</code></td><td>scalar</td><td>extract the scalar at a dotted/indexed JSON path (no full parse — only the matched value is materialized)</td></tr>
+    <tr><td><code>fetch(url)</code></td><td>string</td><td>HTTP(S) GET body. Gated by a host allowlist; errors if the host isn't allowed or no network capability is present</td></tr>
   </table>
+</section>
+
+<section>
+  <h2>Network &amp; JSON</h2>
+  <p><code>fetch(url)</code> + <code>json_get(text, path)</code> let a program pull live data and read one
+  field out of it. <code>fetch</code> is a mediated capability — the host/device decides which hosts are
+  reachable (an allowlist), so a program can't reach arbitrary URLs.</p>
+<pre><code># Host CLI (allow the host explicitly):
+pyspell run oslo_temp.py --allow-host api.met.no
+# where oslo_temp.py is:
+json_get(
+  fetch("https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=59.91&amp;lon=10.75"),
+  "properties.timeseries.0.data.instant.details.air_temperature")
+# → 14.9</code></pre>
+  <p><strong>Memory note (device):</strong> <code>json_get</code> is path-directed so it never builds the
+  whole document in RAM — it materializes only the matched value. On the ESP32 (≈50 kB free, no PSRAM)
+  this is what makes reading a field out of a large response feasible.</p>
 </section>
 
 <section>
