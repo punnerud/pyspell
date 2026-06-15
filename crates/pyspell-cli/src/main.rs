@@ -10,7 +10,7 @@ use std::io::Write; // brought in scope for write_all/flush on the serial link
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use pyspell_core::{env::VecEnv, eval, value::Value, wire};
+use pyspell_core::{env::VecEnv, eval, value::Value, wire, DslError, Limits, Net};
 use pyspell_lang::{compile, lang_from_extension, Lang};
 
 #[derive(Parser)]
@@ -40,6 +40,10 @@ enum Cmd {
         /// Bind a free variable, e.g. `--set free_heap=120000`. Repeatable.
         #[arg(long = "set", value_name = "NAME=VALUE")]
         sets: Vec<String>,
+        /// Allow `fetch()` to reach this host (e.g. `api.met.no`). Repeatable;
+        /// subdomains of an allowed host are permitted. Empty = no network.
+        #[arg(long = "allow-host", value_name = "HOST")]
+        allow_hosts: Vec<String>,
         #[arg(long, value_enum)]
         lang: Option<LangArg>,
     },
@@ -102,11 +106,13 @@ fn real_main() -> Result<(), String> {
             println!("compiled {file} -> {out} ({} bytes IR)", bytes.len());
             Ok(())
         }
-        Cmd::Run { file, sets, lang } => {
+        Cmd::Run { file, sets, allow_hosts, lang } => {
             let (src, lang) = read_source(&file, lang)?;
             let program = compile(&src, lang).map_err(|e| e.to_string())?;
             let env = build_env(&sets)?;
-            let value = eval::run(&program, &env).map_err(|e| e.to_string())?;
+            let net = HttpNet { allow: allow_hosts };
+            let limits = Limits { max_steps: program.max_steps, deadline: None, net: Some(&net) };
+            let value = eval::run_with(&program, &env, limits).map_err(|e| e.to_string())?;
             println!("{}", show(&value));
             Ok(())
         }
@@ -175,8 +181,8 @@ fn parse_value(raw: &str) -> Value {
         if parts.len() > 1 && parts.iter().all(|p| p.trim().parse::<i64>().is_ok()) {
             Value::list(parts.iter().map(|p| Value::Int(p.trim().parse().unwrap())))
         } else {
-            // Fall back to 0 is too surprising; encode as float NaN-free 0 with note.
-            Value::Int(0)
+            // Anything else is a string value.
+            Value::str(raw)
         }
     }
 }
@@ -186,11 +192,47 @@ fn show(v: &Value) -> String {
         Value::Int(n) => n.to_string(),
         Value::Float(x) => x.to_string(),
         Value::Bool(b) => b.to_string(),
+        Value::Str(s) => s.to_string(),
         Value::List(l) => {
             let inner: Vec<String> = l.iter().map(show).collect();
             format!("[{}]", inner.join(", "))
         }
     }
+}
+
+// ---- host network capability (for `fetch` in `run`) ----------------------
+
+/// Host-side `fetch` over HTTP(S), gated by a host allowlist. Mirrors what the
+/// device enforces from its config — the allowlist is policy, kept out of the
+/// pure evaluator.
+struct HttpNet {
+    allow: Vec<String>,
+}
+
+impl Net for HttpNet {
+    fn fetch(&self, url: &str) -> Result<String, DslError> {
+        let host = url_host(url);
+        let ok = self
+            .allow
+            .iter()
+            .any(|h| host == *h || host.ends_with(&format!(".{h}")));
+        if !ok {
+            return Err(DslError::Net(format!(
+                "host `{host}` not allowed (use --allow-host {host})"
+            )));
+        }
+        let resp = ureq::get(url)
+            .set("User-Agent", "pyspell/0.1 (github.com/punnerud/pyspell)")
+            .call()
+            .map_err(|e| DslError::Net(format!("{e}")))?;
+        resp.into_string().map_err(|e| DslError::Net(format!("read body: {e}")))
+    }
+}
+
+/// Crude host extraction: strip scheme, take up to the first `/` or `:`.
+fn url_host(url: &str) -> String {
+    let after = url.split("://").nth(1).unwrap_or(url);
+    after.split(['/', ':']).next().unwrap_or("").to_string()
 }
 
 // ---- device link ---------------------------------------------------------

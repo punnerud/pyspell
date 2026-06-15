@@ -22,6 +22,9 @@ pub enum DslError {
     Timeout,
     /// (De)serialization of a program over the wire failed.
     Wire(String),
+    /// A `fetch` network capability error (no capability, disallowed host, HTTP
+    /// failure, …). The message is host/device-supplied.
+    Net(String),
 }
 
 impl fmt::Display for DslError {
@@ -37,6 +40,7 @@ impl fmt::Display for DslError {
             DslError::Budget => write!(f, "program exceeded its evaluation step budget"),
             DslError::Timeout => write!(f, "program exceeded its time limit"),
             DslError::Wire(m) => write!(f, "wire error: {m}"),
+            DslError::Net(m) => write!(f, "network error: {m}"),
         }
     }
 }

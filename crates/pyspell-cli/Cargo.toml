@@ -16,3 +16,6 @@ pyspell-lang = { path = "../pyspell-lang" }
 clap = { version = "4", features = ["derive"] }
 serialport = "4"
 rustyline = "14"
+# HTTP client for the host-side `fetch` capability (lets `run` exercise network
+# spells before they go to the device). TLS via rustls.
+ureq = { version = "2", features = ["tls"] }

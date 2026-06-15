@@ -10,12 +10,23 @@ use alloc::string::ToString;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use alloc::string::String;
+
 use crate::env::Env;
 use crate::error::DslError;
 use crate::ir::{BinOp, BoolOp, Builtin, CmpOp, Expr, Program, UnOp, Value};
 
+/// A host-provided network capability for the `fetch(url)` builtin. The
+/// evaluator itself performs no I/O — this is the single mediated effect, so the
+/// host (CLI: an HTTP client; device: esp-idf + a config allowlist) controls
+/// exactly what a program may reach. `None` installed → `fetch` errors.
+pub trait Net {
+    fn fetch(&self, url: &str) -> Result<String, DslError>;
+}
+
 struct Frame<'a> {
     env: &'a dyn Env,
+    net: Option<&'a dyn Net>,
     locals: Vec<Value>,
     budget: u32,
     /// Optional wall-clock guard: called periodically, returns `true` when the
@@ -27,17 +38,19 @@ struct Frame<'a> {
     since_check: u32,
 }
 
-/// How long a program may run.
+/// How long a program may run, and what it may reach.
 pub struct Limits<'a> {
     /// Per-evaluation instruction budget (runaway guard). Independent of wall time.
     pub max_steps: u32,
     /// Optional wall-clock deadline predicate (see [`Frame::deadline`]).
     pub deadline: Option<&'a dyn Fn() -> bool>,
+    /// Optional network capability for `fetch` (see [`Net`]).
+    pub net: Option<&'a dyn Net>,
 }
 
 impl Default for Limits<'_> {
     fn default() -> Self {
-        Limits { max_steps: crate::ir::DEFAULT_MAX_STEPS, deadline: None }
+        Limits { max_steps: crate::ir::DEFAULT_MAX_STEPS, deadline: None, net: None }
     }
 }
 
@@ -49,7 +62,7 @@ const DEADLINE_CHECK_INTERVAL: u32 = 256;
 /// [`Value`]. Uses the program's own `max_steps` and no wall-clock timeout. The
 /// result interpretation (bool predicate, numeric score, …) is the caller's.
 pub fn run<E: Env>(program: &Program, env: &E) -> Result<Value, DslError> {
-    run_with(program, env, Limits { max_steps: program.max_steps, deadline: None })
+    run_with(program, env, Limits { max_steps: program.max_steps, deadline: None, net: None })
 }
 
 /// Evaluate with explicit [`Limits`] — a step budget plus an optional wall-clock
@@ -58,6 +71,7 @@ pub fn run<E: Env>(program: &Program, env: &E) -> Result<Value, DslError> {
 pub fn run_with<E: Env>(program: &Program, env: &E, limits: Limits) -> Result<Value, DslError> {
     let mut f = Frame {
         env,
+        net: limits.net,
         locals: vec_filled(program.n_locals as usize),
         budget: limits.max_steps,
         deadline: limits.deadline,
@@ -156,6 +170,7 @@ fn as_bool(v: &Value) -> Result<bool, DslError> {
         Value::Bool(b) => *b,
         Value::Int(n) => *n != 0,
         Value::Float(x) => *x != 0.0,
+        Value::Str(s) => !s.is_empty(),
         Value::List(l) => !l.is_empty(),
     })
 }
@@ -165,11 +180,42 @@ fn as_f64(v: &Value) -> Result<f64, DslError> {
         Value::Int(n) => Ok(*n as f64),
         Value::Float(x) => Ok(*x),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
+        // A numeric string coerces (lets `json_get` results compare numerically).
+        Value::Str(s) => s.trim().parse::<f64>().map_err(|_| {
+            DslError::Type("expected a number, got a non-numeric string".to_string())
+        }),
         Value::List(_) => Err(DslError::Type("expected a number, got a list".to_string())),
     }
 }
 
+/// Render a value as a string (for `str()` and string concatenation).
+fn to_str(v: &Value) -> String {
+    match v {
+        Value::Int(n) => format!("{n}"),
+        Value::Float(x) => format!("{x}"),
+        Value::Bool(b) => String::from(if *b { "true" } else { "false" }),
+        Value::Str(s) => String::from(&**s),
+        Value::List(l) => {
+            let mut s = String::from("[");
+            for (i, it) in l.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&to_str(it));
+            }
+            s.push(']');
+            s
+        }
+    }
+}
+
 fn num_binop(op: BinOp, a: Value, b: Value) -> Result<Value, DslError> {
+    // `+` with a string operand concatenates (the value is rendered to text).
+    if op == BinOp::Add && (matches!(a, Value::Str(_)) || matches!(b, Value::Str(_))) {
+        let mut s = to_str(&a);
+        s.push_str(&to_str(&b));
+        return Ok(Value::str(&s));
+    }
     // If both are ints, stay integral (truncating div/rem); otherwise float.
     if let (Value::Int(x), Value::Int(y)) = (&a, &b) {
         let (x, y) = (*x, *y);
@@ -209,6 +255,17 @@ fn compare(op: CmpOp, a: Value, b: Value) -> Result<bool, DslError> {
             CmpOp::Ne => Ok(x != y),
             _ => Err(DslError::Type("booleans support only == and !=".to_string())),
         };
+    }
+    // String comparisons: equality and lexicographic ordering.
+    if let (Value::Str(x), Value::Str(y)) = (&a, &b) {
+        return Ok(match op {
+            CmpOp::Eq => x == y,
+            CmpOp::Ne => x != y,
+            CmpOp::Lt => x < y,
+            CmpOp::Le => x <= y,
+            CmpOp::Gt => x > y,
+            CmpOp::Ge => x >= y,
+        });
     }
     let (x, y) = (as_f64(&a)?, as_f64(&b)?);
     Ok(match op {
@@ -254,7 +311,8 @@ fn call_builtin(b: Builtin, args: &[Expr], f: &mut Frame) -> Result<Value, DslEr
             }
             match &vals[0] {
                 Value::List(l) => Ok(Value::Int(l.len() as i64)),
-                _ => Err(DslError::Type("len() expects a list".to_string())),
+                Value::Str(s) => Ok(Value::Int(s.chars().count() as i64)),
+                _ => Err(DslError::Type("len() expects a list or string".to_string())),
             }
         }
         Builtin::Abs => {
@@ -378,6 +436,39 @@ fn call_builtin(b: Builtin, args: &[Expr], f: &mut Frame) -> Result<Value, DslEr
             let items = single_list(&vals, "last")?;
             Ok(items.last().cloned().unwrap_or(Value::Int(-1)))
         }
+        Builtin::Str => {
+            if vals.len() != 1 {
+                return Err(arity_err(vals.len()));
+            }
+            Ok(Value::str(&to_str(&vals[0])))
+        }
+        Builtin::JsonGet => {
+            if vals.len() != 2 {
+                return Err(arity_err(vals.len()));
+            }
+            let text = match &vals[0] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(DslError::Type("json_get() expects a string as 1st arg".to_string())),
+            };
+            let path = match &vals[1] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(DslError::Type("json_get() expects a path string as 2nd arg".to_string())),
+            };
+            crate::json::get(&text, &path)
+        }
+        Builtin::Fetch => {
+            if vals.len() != 1 {
+                return Err(arity_err(vals.len()));
+            }
+            let url = match &vals[0] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(DslError::Type("fetch() expects a url string".to_string())),
+            };
+            match f.net {
+                Some(net) => Ok(Value::str(&net.fetch(&url)?)),
+                None => Err(DslError::Net("no network capability installed".to_string())),
+            }
+        }
     }
 }
 
@@ -470,6 +561,9 @@ fn builtin_name(b: Builtin) -> &'static str {
         Builtin::Before => "before",
         Builtin::First => "first",
         Builtin::Last => "last",
+        Builtin::Str => "str",
+        Builtin::JsonGet => "json_get",
+        Builtin::Fetch => "fetch",
     }
 }
 

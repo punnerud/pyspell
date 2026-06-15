@@ -42,6 +42,7 @@ enum Tok {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Str(String),
     Ident(String),
     // keywords
     Let,
@@ -76,6 +77,28 @@ enum Tok {
     Dot,
     Assign,
     Semi,
+}
+
+fn unescape(raw: &str) -> String {
+    let mut out = String::new();
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some('\'') => out.push('\''),
+                Some(o) => out.push(o),
+                None => {}
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn lex(src: &str) -> Result<Vec<Tok>, DslError> {
@@ -127,6 +150,24 @@ fn lex(src: &str) -> Result<Vec<Tok>, DslError> {
                     _ => Tok::Ident(word.to_string()),
                 });
             }
+            b'"' | b'\'' => {
+                // scan to the matching unescaped quote (byte-wise is UTF-8 safe
+                // since quote/backslash are ASCII), then unescape the slice.
+                let quote = c;
+                let mut j = i + 1;
+                while j < b.len() {
+                    match b[j] {
+                        b'\\' => j += 2,
+                        q if q == quote => break,
+                        _ => j += 1,
+                    }
+                }
+                if j >= b.len() {
+                    return Err(DslError::Parse("unterminated string".into()));
+                }
+                out.push(Tok::Str(unescape(&src[i + 1..j])));
+                i = j + 1;
+            }
             _ => {
                 // multi-char operators first
                 let two = if i + 1 < b.len() { &src[i..i + 2] } else { "" };
@@ -166,9 +207,6 @@ fn lex(src: &str) -> Result<Vec<Tok>, DslError> {
                     b'.' => Tok::Dot,
                     b'=' => Tok::Assign,
                     b';' => Tok::Semi,
-                    b'"' | b'\'' => {
-                        return Err(DslError::Forbidden("string literal".into()))
-                    }
                     other => {
                         return Err(DslError::Parse(alloc::format!(
                             "unexpected character `{}`",
@@ -432,6 +470,7 @@ impl Parser {
             Some(Tok::Int(n)) => Ok(Expr::Const(Value::Int(n))),
             Some(Tok::Float(x)) => Ok(Expr::Const(Value::Float(x))),
             Some(Tok::Bool(b)) => Ok(Expr::Const(Value::Bool(b))),
+            Some(Tok::Str(s)) => Ok(Expr::Const(Value::str(&s))),
             Some(Tok::LParen) => {
                 let e = self.conditional()?;
                 self.expect(&Tok::RParen, "`)`")?;
@@ -521,6 +560,9 @@ fn builtin_from(name: &str) -> Result<Builtin, DslError> {
         "before" => Builtin::Before,
         "first" => Builtin::First,
         "last" => Builtin::Last,
+        "str" => Builtin::Str,
+        "json_get" => Builtin::JsonGet,
+        "fetch" => Builtin::Fetch,
         _ => return Err(DslError::Forbidden(alloc::format!("function `{name}()`"))),
     })
 }
@@ -564,8 +606,19 @@ mod tests {
     }
 
     #[test]
+    fn strings_and_json() {
+        let env = VecEnv::new();
+        // string literals + concatenation + comparison
+        assert_eq!(run_py("\"ab\" + \"c\"", &env), Value::str("abc"));
+        assert_eq!(run_py("'oslo' == 'oslo'", &env), Value::Bool(true));
+        assert_eq!(run_py("len('hello')", &env), Value::Int(5));
+        // json_get over a literal document
+        let doc = r#"json_get('{"a":{"b":[10,20,30]}}', 'a.b.1')"#;
+        assert_eq!(run_py(doc, &env), Value::Int(20));
+    }
+
+    #[test]
     fn rejects_unsafe() {
-        assert!(matches!(parse("\"hi\"", Lang::Python), Err(DslError::Forbidden(_))));
         assert!(matches!(parse("foo()", Lang::Python), Err(DslError::Forbidden(_))));
         assert!(matches!(parse("x.bar()", Lang::Python), Err(DslError::Forbidden(_))));
         assert!(matches!(parse("1 +", Lang::Python), Err(DslError::Parse(_))));

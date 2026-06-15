@@ -72,6 +72,15 @@ pub enum Builtin {
     First,
     /// `last(list)` → last element, or -1 if empty.
     Last,
+    /// `str(x)` → string representation of a value.
+    Str,
+    /// `json_get(text, "a.b.0.c")` → the scalar at a dotted/indexed JSON path.
+    /// Path-directed: it scans the text and only materializes the matched value.
+    JsonGet,
+    /// `fetch(url)` → HTTP GET body as a string. A host-provided capability
+    /// ([`crate::eval::Net`]); the evaluator itself does no I/O. Host/device
+    /// enforce any allowlist. Errors if no network capability is installed.
+    Fetch,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

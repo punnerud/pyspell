@@ -11,6 +11,9 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
+    /// A text string (URLs, JSON fragments, extracted fields). Refcounted so
+    /// cloning a `Value` stays cheap even for a large fetched body.
+    Str(Arc<str>),
     List(Arc<[Value]>),
 }
 
@@ -18,6 +21,10 @@ impl Value {
     /// A list value built from an iterator of values.
     pub fn list<I: IntoIterator<Item = Value>>(items: I) -> Value {
         Value::List(items.into_iter().collect())
+    }
+    /// A string value.
+    pub fn str(s: impl AsRef<str>) -> Value {
+        Value::Str(Arc::from(s.as_ref()))
     }
 }
 
@@ -27,9 +34,21 @@ impl PartialEq for Value {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
             _ => false,
         }
+    }
+}
+
+impl From<&str> for Value {
+    fn from(s: &str) -> Value {
+        Value::Str(Arc::from(s))
+    }
+}
+impl From<alloc::string::String> for Value {
+    fn from(s: alloc::string::String) -> Value {
+        Value::Str(Arc::from(s.as_str()))
     }
 }
 

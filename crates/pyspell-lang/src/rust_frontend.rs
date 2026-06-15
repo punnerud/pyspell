@@ -195,7 +195,8 @@ fn lower_lit(lit: &Lit) -> Result<Expr, DslError> {
             fl.base10_parse::<f64>().map_err(|e| DslError::Parse(e.to_string()))?,
         ))),
         Lit::Bool(b) => Ok(Expr::Const(Value::Bool(b.value))),
-        _ => Err(DslError::Forbidden("string/char/byte literal".into())),
+        Lit::Str(s) => Ok(Expr::Const(Value::str(s.value()))),
+        _ => Err(DslError::Forbidden("char/byte literal".into())),
     }
 }
 
@@ -262,7 +263,6 @@ mod tests {
         assert!(matches!(err("loop {}"), DslError::Parse(_) | DslError::Forbidden(_)));
         assert!(matches!(err("if x > 1 { 1 }"), DslError::Forbidden(_)));
         assert!(matches!(err("x.abs()"), DslError::Forbidden(_)));
-        assert!(matches!(err("\"hi\""), DslError::Forbidden(_)));
         assert!(matches!(err("|x| x"), DslError::Forbidden(_)));
     }
 }

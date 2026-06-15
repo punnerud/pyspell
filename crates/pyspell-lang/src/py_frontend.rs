@@ -155,7 +155,7 @@ fn lower_const(c: &ast::Constant) -> Result<Expr, DslError> {
             .map_err(|_| DslError::Forbidden("integer literal out of range".into())),
         ast::Constant::Float(x) => Ok(Expr::Const(Value::Float(*x))),
         ast::Constant::Bool(b) => Ok(Expr::Const(Value::Bool(*b))),
-        ast::Constant::Str(_) => Err(DslError::Forbidden("string literal".into())),
+        ast::Constant::Str(s) => Ok(Expr::Const(Value::str(s))),
         _ => Err(DslError::Forbidden("constant".into())),
     }
 }
@@ -217,6 +217,13 @@ mod tests {
         assert!(matches!(err("os.system"), DslError::Forbidden(_)));
         assert!(matches!(err("[x for x in seq]"), DslError::Forbidden(_)));
         assert!(matches!(err("lambda x: x"), DslError::Forbidden(_)));
-        assert!(matches!(err("'hi'"), DslError::Forbidden(_)));
+    }
+
+    #[test]
+    fn strings_and_builtins() {
+        // string literals now compile; new builtins resolve
+        ok("\"https://example.com\"");
+        ok("json_get(body, \"a.b.0\")");
+        ok("fetch(\"https://api.met.no/x\")");
     }
 }

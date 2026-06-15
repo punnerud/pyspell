@@ -17,13 +17,14 @@ pub mod env;
 pub mod error;
 pub mod eval;
 pub mod ir;
+pub mod json;
 pub mod parse;
 pub mod value;
 pub mod wire;
 
 pub use env::{EmptyEnv, Env, VecEnv};
 pub use error::DslError;
-pub use eval::{run, run_with, Limits};
+pub use eval::{run, run_with, Limits, Net};
 pub use ir::{Program, DEFAULT_MAX_STEPS};
 pub use parse::{parse, Lang};
 pub use value::Value;
