@@ -46,6 +46,10 @@ mod ui;
 mod pyspell_web;
 #[cfg(feature = "pyspell")]
 mod net;
+// Local-LAN parallel PySpell: worker-pool HTTP server on the WiFi IP (the in-tunnel
+// server stays single-connection). Uses the demo's heap headroom for concurrency.
+#[cfg(feature = "pyspell")]
+mod local_server;
 #[cfg(feature = "pyspell")]
 mod display;
 
@@ -200,6 +204,15 @@ fn main() -> Result<()> {
         esp_idf_svc::sys::esp_wifi_set_ps(ps_mode);
     }
     println!("wifi power-save mode set: {:?}", config::WIFI_POWER_SAVE);
+
+    // NOTE: a local-LAN parallel PySpell worker pool (local_server.rs) was tried here
+    // but DISABLED. Measured on hardware: even 2 fetch-capable worker threads (64 kB of
+    // permanent stacks) drop free heap enough that the demo's own tailscale data plane
+    // (netmap refresh + peer fetch + DERP, which peak near all the heap) aborts/boot-loops.
+    // The demo's "~260 kB free" is a calm-moment reading; WORST-CASE headroom is ~60 kB,
+    // so there is no room for a worker pool alongside full tailscale. Parallel PySpell
+    // belongs on the lean esp-rs stack (cooperative shared stack — many jobs, no per-thread
+    // stack cost). local_server.rs + net.rs's FETCH gate are kept as reference, unused.
 
     // subnet-router/exit-node: enable NAPT on the STA netif (data-path foundation;
     // the WG-netif bridge is the remaining deep work — see router.rs).

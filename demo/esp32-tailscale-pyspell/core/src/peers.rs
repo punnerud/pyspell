@@ -113,14 +113,14 @@ pub fn cidr_match(allowed: &[Cidr], ip: u32) -> bool {
     allowed.iter().any(|&(net, mask)| ip & mask == net & mask)
 }
 
-fn cidr_contains(c: Option<Cidr>, ip: u32) -> bool {
+pub fn cidr_contains(c: Option<Cidr>, ip: u32) -> bool {
     match c {
         Some((net, mask)) => ip & mask == net & mask,
         None => false,
     }
 }
 
-fn parse_cidr(s: &str) -> Option<Cidr> {
+pub fn parse_cidr(s: &str) -> Option<Cidr> {
     let (ip, bits) = match s.split_once('/') {
         Some((i, b)) => (i, b.parse::<u32>().ok()?),
         None => (s, 32),
@@ -168,7 +168,7 @@ pub fn parse_peers(raw: &[u8]) -> Result<Vec<PeerInfo>> {
 
 /// Decode a `"<type>:<64-hex>"` key string (e.g. `nodekey:abcd…`,
 /// `discokey:abcd…`) into 32 raw bytes. Accepts a bare 64-hex string too.
-fn parse_keyed_hex(s: &str) -> Option<[u8; 32]> {
+pub fn parse_keyed_hex(s: &str) -> Option<[u8; 32]> {
     let hex = s.rsplit(':').next().unwrap_or(s);
     if hex.len() != 64 {
         return None;

@@ -23,6 +23,37 @@ const MAX_BUFFER: usize = 16 * 1024;
 const CHUNK: usize = 512;
 const USER_AGENT: &str = "pyspell-esp32/0.1 github.com/punnerud/pyspell";
 
+/// Concurrent TLS fetches are bounded to ONE. Measured on hardware: esp-idf's
+/// mbedTLS / `esp_crt_bundle` stack fails ("connect failed" / "http client init
+/// failed") at even 2 concurrent TLS sessions — NOT a heap limit (~260 kB free),
+/// but esp-idf TLS-stack resource/thread-safety limits (the cert bundle has global
+/// state). So fetches serialize through this gate (each waiting job holds only its
+/// URL); they all succeed, just one at a time. Compute-only PySpell jobs never enter
+/// `stream()` → they run fully parallel across the worker pool. (The lean embedded-tls
+/// build did 2+ concurrent verified fetches — it handles concurrency better here.)
+const FETCH_MAX: usize = 1;
+static FETCH_PERMITS: std::sync::Mutex<usize> = std::sync::Mutex::new(FETCH_MAX);
+static FETCH_CV: std::sync::Condvar = std::sync::Condvar::new();
+
+/// RAII fetch permit: releases (and wakes a waiter) on drop, even on early return.
+struct FetchPermit;
+impl Drop for FetchPermit {
+    fn drop(&mut self) {
+        if let Ok(mut n) = FETCH_PERMITS.lock() {
+            *n += 1;
+            FETCH_CV.notify_one();
+        }
+    }
+}
+fn acquire_fetch() -> FetchPermit {
+    let mut n = FETCH_PERMITS.lock().unwrap();
+    while *n == 0 {
+        n = FETCH_CV.wait(n).unwrap();
+    }
+    *n -= 1;
+    FetchPermit
+}
+
 pub struct DeviceNet;
 
 impl Net for DeviceNet {
@@ -83,6 +114,8 @@ fn check_allowed(url: &str) -> Result<(), DslError> {
 /// up (freeing the TLS context) before returning.
 fn stream(url: &str, mut on_chunk: impl FnMut(&[u8]) -> bool) -> Result<(), DslError> {
     check_allowed(url)?;
+    // Bound concurrent TLS sessions (a waiting job blocks here holding only the URL).
+    let _permit = acquire_fetch();
     let url_c = CString::new(url).map_err(|_| DslError::Net(String::from("bad url")))?;
 
     let mut cfg: esp_http_client_config_t = unsafe { core::mem::zeroed() };

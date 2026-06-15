@@ -159,6 +159,44 @@ impl H2 {
         }
     }
 
+    /// Read the next DATA chunk of a one-shot response, frame by frame, WITHOUT
+    /// accumulating the whole body. Returns `(payload, is_end)`: `payload` is `None`
+    /// for an end-only frame, `is_end` is true once the server set END_STREAM. Lets a
+    /// std caller wrap this in `io::Read` and feed `serde_json::from_reader` so a large
+    /// MapResponse (DERPMap etc.) is parsed incrementally instead of buffered (~60 kB).
+    pub fn read_response_chunk(&mut self, stream_id: u32) -> Result<(Option<Vec<u8>>, bool)> {
+        loop {
+            let fr = self.read_frame()?;
+            if fr.stream_id != stream_id && fr.stream_id != 0 {
+                continue;
+            }
+            match fr.typ {
+                FT_HEADERS => {
+                    if fr.flags & FL_END_STREAM != 0 {
+                        return Ok((None, true));
+                    }
+                }
+                FT_DATA => {
+                    let end = fr.flags & FL_END_STREAM != 0;
+                    if !fr.payload.is_empty() {
+                        self.window_update(stream_id, fr.payload.len() as u32)?;
+                        return Ok((Some(fr.payload), end));
+                    }
+                    if end {
+                        return Ok((None, true));
+                    }
+                }
+                FT_SETTINGS => {
+                    if fr.flags & FL_ACK == 0 {
+                        self.send(&frame(FT_SETTINGS, FL_ACK, 0, &[]))?;
+                    }
+                }
+                FT_GOAWAY => bail!("server GOAWAY (response stream)"),
+                _ => {}
+            }
+        }
+    }
+
     fn read_response(&mut self, stream_id: u32) -> Result<(u16, Vec<u8>)> {
         let mut status: u16 = 0;
         let mut body: Vec<u8> = Vec::new();
