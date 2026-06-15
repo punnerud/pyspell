@@ -170,16 +170,55 @@ fn hexval(c: u8) -> Option<u8> {
     }
 }
 
-/// The web page. Deliberately tiny so it fits one TCP segment (the in-tunnel
-/// server sends a single data+FIN segment).
-const PAGE: &str = "<!doctype html><meta charset=utf-8>\
-<meta name=viewport content=\"width=device-width,initial-scale=1\">\
-<title>PySpell</title>\
-<body style=\"font-family:sans-serif;background:#111;color:#eee;margin:1em\">\
-<h3>PySpell on ESP32</h3>\
-<textarea id=c rows=4 style=width:100%>free_heap > 100000</textarea>\
-<p><select id=l><option value=py>Python</option><option value=rs>Rust</option></select> \
-timeout <input id=t value=10 size=2>s \
-<button onclick=r()>Run</button></p><pre id=o></pre>\
-<script>function r(){fetch('/run?lang='+l.value+'&timeout='+t.value,{method:'POST',body:c.value})\
-.then(x=>x.text()).then(s=>o.textContent=s).catch(e=>o.textContent=e)}</script>";
+/// The web app: a Cursor-like split view (code left, agent chat right) served from
+/// the dongle's HTTP origin so it can call `/run` (same-origin) and OpenAI (HTTPS),
+/// and use localStorage (works on HTTP). Now larger than one TCP segment — the
+/// in-tunnel server (core/tcp.rs) sends it across multiple segments. Lives in flash.
+const PAGE: &str = r##"<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>PySpell Agent</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;height:100vh;display:flex;flex-direction:column}
+header{padding:6px 10px;background:#161b22;border-bottom:1px solid #30363d;display:flex;gap:8px;align-items:center;font-size:13px;flex-wrap:wrap}
+header a{color:#58a6ff;text-decoration:none}
+main{flex:1;display:flex;min-height:0}
+.pane{flex:1;display:flex;flex-direction:column;min-width:0}.left{border-right:1px solid #30363d}
+textarea,#chat,#msg,input,select{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}
+#code{flex:1;margin:8px;padding:8px;font-family:monospace;font-size:13px;resize:none}
+.bar{display:flex;gap:6px;padding:0 8px 8px}
+button{background:#238636;color:#fff;border:0;border-radius:6px;padding:6px 12px;cursor:pointer}button.sec{background:#30363d}
+#out{margin:0 8px 8px;padding:8px;background:#161b22;border-radius:6px;font-family:monospace;font-size:13px;white-space:pre-wrap;max-height:32%;overflow:auto}
+#chat{flex:1;margin:8px;padding:8px;overflow:auto;font-size:13px}.m{margin:6px 0;padding:6px 8px;border-radius:6px}.u{background:#1f6feb33}.a{background:#161b22}
+.crow{display:flex;gap:6px;padding:0 8px 8px}#msg{flex:1;padding:6px}input,select{padding:4px}
+</style></head><body>
+<header><b>PySpell Agent</b>
+<select id=lang><option value=py>Python</option><option value=rs>Rust</option></select>
+<span style=flex:1></span>
+<input id=key type=password placeholder="OpenAI key" size=12>
+<input id=model value=gpt-4o-mini size=10>
+<a href="https://punnerud.github.io/pyspell/" target=_blank>docs</a></header>
+<main>
+<div class="pane left"><textarea id=code spellcheck=false></textarea>
+<div class=bar><button onclick=run()>Run</button><button class=sec onclick="ask('Improve this code')">Ask agent</button></div>
+<pre id=out></pre></div>
+<div class=pane><div id=chat></div>
+<div class=crow><input id=msg placeholder="Ask the agent..." onkeydown="if(event.key=='Enter')send()"><button onclick=send()>Send</button></div></div>
+</main>
+<script>
+const $=id=>document.getElementById(id),LS=localStorage
+$('code').value=LS.ps_code||'free_heap > 100000'
+$('key').value=LS.ps_key||'';$('model').value=LS.ps_model||'gpt-4o-mini'
+let chat=JSON.parse(LS.ps_chat||'[]')
+function save(){LS.ps_code=$('code').value;LS.ps_key=$('key').value;LS.ps_model=$('model').value;LS.ps_chat=JSON.stringify(chat)}
+function render(){$('chat').innerHTML=chat.map(m=>'<div class="m '+(m.role=='user'?'u':'a')+'">'+m.content.replace(/</g,'&lt;')+'</div>').join('');$('chat').scrollTop=1e9}
+render()
+async function run(){save();$('out').textContent='running...';try{const r=await fetch('/run?lang='+$('lang').value+'&timeout=20',{method:'POST',body:$('code').value});$('out').textContent=await r.text()}catch(e){$('out').textContent='error: '+e}}
+function sys(){return 'You are a coding assistant for PySpell: a sandboxed Python/Rust expression subset. Allowed: literals, arithmetic, comparisons, boolean, ternary, lists, strings, builtins (len,abs,min,max,sum,round,int,float,str), fetch_json(url,"a.b.0.c"), json_get, and free vars like free_heap, uptime_s. NOT allowed: def, loops, imports, assignment. Keep replies short; give a single PySpell expression when you give code.'}
+function ask(p){const t=p+':\n'+$('code').value;send(t)}
+async function send(pre){const text=pre||$('msg').value;if(!text)return
+$('msg').value='';chat.push({role:'user',content:text});render();save()
+const key=$('key').value;if(!key){chat.push({role:'assistant',content:'(set your OpenAI key, top-right)'});render();return}
+const msgs=[{role:'system',content:sys()},{role:'user',content:'Current code:\n'+$('code').value},...chat]
+try{const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+key},body:JSON.stringify({model:$('model').value,messages:msgs})})
+const j=await r.json();const a=j.choices?j.choices[0].message.content:('error: '+JSON.stringify(j).slice(0,200))
+chat.push({role:'assistant',content:a});render();save()}catch(e){chat.push({role:'assistant',content:'error: '+e+' — OpenAI browser CORS? may need a proxy'});render()}}
+</script></body></html>"##;
