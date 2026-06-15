@@ -1,10 +1,21 @@
 # PySpell
 
-A small, **sandboxed expression language** you write in **Rust** or **Python**
-syntax, compile to a compact AST/IR on a host, and **push live to an ESP32** —
-a little like MicroPython, but the parser never runs on the device. Only verified
-IR crosses to the microcontroller, where a tiny native evaluator runs it against
-live device state.
+**Toward micro-containers for microcontrollers.** Write a small program in **Rust**
+or **Python** syntax, compile it to a compact IR on a host, and **push it live to an
+ESP32** — reachable over **Tailscale** — where a tiny native evaluator runs it in a
+sandbox against live device state. The direction is lightweight, pushable
+*"micro-containers"* for tiny chips: drop a bit of code onto a device and run it
+safely, remotely.
+
+> **Honest status — not full containers yet.** Today PySpell is a sandboxed
+> *expression* evaluator: `let` bindings + one expression in a safe Python/Rust
+> **subset** (arithmetic, comparisons, lists, strings, and a fixed set of builtins
+> incl. `fetch_json` for live data). No `def`, loops, imports, or arbitrary I/O —
+> that restriction *is* the security boundary, and the parser never runs on the
+> device (only verified IR crosses). Isolation is language-level (one shared
+> sandbox), not OS containers; truly parallel, isolated "containers" need more RAM
+> than the ESP32-S3 has (no PSRAM). So: the micro-container *vision*, with a small,
+> safe evaluator as the first step.
 
 > PySpell started life as a constraint DSL inside an unrelated routing solver.
 > This is a clean, standalone extraction: the domain-specific schema is gone and
@@ -39,15 +50,18 @@ firmware/
 A program is `let` bindings followed by a single returned expression (Rust), or a
 single expression (Python). It can use:
 
-- literals (int, float, bool), arithmetic, comparison, boolean (`and`/`or`,
-  short-circuiting), `if/else` (ternary), lists, indexing (negative ok),
-- builtins: `len, abs, min, max, sum, any, all, round, int, float, bool,
-  index, before, first, last`, and membership (`x in list` / `.contains`),
+- literals (int, float, bool, **string**), arithmetic, comparison, boolean
+  (`and`/`or`, short-circuiting), `if/else` (ternary), lists, indexing (negative ok),
+- builtins: `len, abs, min, max, sum, any, all, round, int, float, bool, str,
+  index, before, first, last`, and membership (`x in list`),
+- **controlled capabilities** (host-granted, off by default): `fetch(url)` /
+  `fetch_json(url, "a.b.0.c")` for an allowlisted HTTPS GET, and `json_get(text,
+  "a.b.0.c")` — the only "I/O", and host-gated by an allowlist,
 - **free identifiers**, resolved at evaluation time against the host `Env`
   (CLI `--set`, or live device readings like `free_heap`, `uptime_ms`).
 
-Anything else (loops, functions, attribute access, imports, strings, I/O) is
-rejected at compile time.
+Anything else (loops, `def`, attribute access, imports, arbitrary I/O) is rejected
+at compile time — that deny-by-default surface is the security boundary.
 
 ## Host usage
 

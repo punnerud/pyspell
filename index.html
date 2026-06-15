@@ -36,15 +36,17 @@
 <body>
 <header>
   <h1>PySpell</h1>
-  <p>A tiny, <strong>sandboxed expression language</strong> you write in <strong>Rust</strong> or
-  <strong>Python</strong> syntax, compile to a compact AST/IR, and run natively — on a host or
-  <strong>live on an ESP32</strong>. Like MicroPython, but two syntaxes and the parser never has to
-  ship to the device.</p>
+  <p><strong>Toward micro-containers for microcontrollers.</strong> Write a tiny program in
+  <strong>Rust</strong> or <strong>Python</strong> syntax, compile it to a compact IR on a host, and
+  <strong>push it live to an ESP32</strong> — reachable over <strong>Tailscale</strong> — to run in a
+  sandbox against live device state. Like MicroPython, but two syntaxes and the parser never ships to
+  the device.</p>
   <div class="badges">
     <span class="badge">no_std + alloc core</span>
     <span class="badge">Rust &amp; Python front-ends</span>
     <span class="badge">~62 kB on ESP32</span>
     <span class="badge">deny-by-default sandbox</span>
+    <span class="badge">live over Tailscale</span>
   </div>
   <p><a href="https://github.com/punnerud/pyspell">View on GitHub →</a></p>
 </header>
@@ -54,10 +56,19 @@
 <section>
   <h2>What it is</h2>
   <p>A PySpell program is a single expression (Python) or some <code>let</code> bindings followed by a
-  trailing expression (Rust). It evaluates to a value — a number, a boolean, or a list. Free identifiers
-  are resolved at evaluation time against a host-supplied <em>environment</em>: CLI variables on a
-  laptop, or live device readings on a microcontroller. There are no loops, functions, imports, strings,
-  or I/O — that is the point: small, fast, and safe to accept from elsewhere.</p>
+  trailing expression (Rust). It evaluates to a value — a number, a boolean, a string, or a list. Free
+  identifiers are resolved at evaluation time against a host-supplied <em>environment</em>: CLI variables
+  on a laptop, or live device readings on a microcontroller. The only I/O is a host-granted, allowlisted
+  <code>fetch_json</code>; there are no loops, functions, or imports — that is the point: small, fast, and
+  safe to accept from elsewhere.</p>
+  <div class="note">
+    <strong>"Micro-containers" — the direction, honestly stated.</strong> The aim is lightweight,
+    pushable units of code on tiny devices. Today it's a <em>sandboxed evaluator</em>, not OS containers:
+    the sandbox is at the <em>language</em> level (deny-by-default grammar + an instruction budget), jobs
+    share one device, and it runs a safe Python/Rust <em>subset</em> — not full Python. Truly parallel,
+    isolated containers need more RAM than the ESP32-S3 has (no PSRAM). So: a small, safe evaluator as
+    the first step toward the micro-container vision.
+  </div>
   <div class="note">
     <strong>Two ways to compile.</strong> On the host, full-fidelity front-ends use <code>syn</code>
     (Rust) and <code>rustpython-parser</code> (Python). For "type code in a browser and run it on the
