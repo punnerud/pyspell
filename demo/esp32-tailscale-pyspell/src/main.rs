@@ -46,6 +46,8 @@ mod ui;
 mod pyspell_web;
 #[cfg(feature = "pyspell")]
 mod net;
+#[cfg(feature = "pyspell")]
+mod display;
 
 /// Construct the in-tunnel TCP server, wiring the PySpell route handler when the
 /// `pyspell` feature is on. Used at every peer's connection setup.

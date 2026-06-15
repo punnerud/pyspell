@@ -25,6 +25,8 @@ pub enum DslError {
     /// A `fetch` network capability error (no capability, disallowed host, HTTP
     /// failure, …). The message is host/device-supplied.
     Net(String),
+    /// A `show` display capability error (no capability, disabled in config, …).
+    Display(String),
 }
 
 impl fmt::Display for DslError {
@@ -41,6 +43,7 @@ impl fmt::Display for DslError {
             DslError::Timeout => write!(f, "program exceeded its time limit"),
             DslError::Wire(m) => write!(f, "wire error: {m}"),
             DslError::Net(m) => write!(f, "network error: {m}"),
+            DslError::Display(m) => write!(f, "display error: {m}"),
         }
     }
 }

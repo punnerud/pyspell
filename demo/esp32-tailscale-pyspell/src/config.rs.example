@@ -83,3 +83,9 @@ pub const PROXY_TARGET_PORT: u16 = 80;
 /// program may only reach these hosts (subdomains of a listed host are allowed).
 /// Keep it tight — this is the network capability boundary.
 pub const FETCH_ALLOW_HOSTS: &[&str] = &["api.met.no"];
+
+/// PySpell `show(x)` may draw on the screen. Set false to forbid it entirely.
+pub const DISPLAY_ALLOW: bool = true;
+/// Seconds before the screen returns to the default info view after a `show()`.
+/// 0 = keep showing the PySpell text (don't auto-revert).
+pub const DISPLAY_REVERT_SECONDS: u32 = 30;

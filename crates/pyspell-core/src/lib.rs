@@ -24,7 +24,7 @@ pub mod wire;
 
 pub use env::{EmptyEnv, Env, VecEnv};
 pub use error::DslError;
-pub use eval::{run, run_with, Limits, Net};
+pub use eval::{run, run_with, Display, Limits, Net};
 pub use ir::{Program, DEFAULT_MAX_STEPS};
 pub use parse::{parse, Lang};
 pub use value::Value;

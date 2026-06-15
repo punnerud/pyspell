@@ -146,7 +146,13 @@ max(a, b)</code></pre>
     <tr><td><code>json_get(text, "a.b.0.c")</code></td><td>scalar</td><td>extract the scalar at a dotted/indexed JSON path (no full parse — only the matched value is materialized)</td></tr>
     <tr><td><code>fetch(url)</code></td><td>string</td><td>HTTP(S) GET body. Gated by a host allowlist; errors if the host isn't allowed or no network capability is present</td></tr>
     <tr><td><code>fetch_json(url, "a.b.0.c")</code></td><td>scalar</td><td>stream the response and extract just the scalar at the path, stopping as soon as it's found — never buffers the whole body. Preferred on the device.</td></tr>
+    <tr><td><code>show(x)</code></td><td>x</td><td>render <code>x</code> to text and display it (the ESP32 screen; stdout on host), returning <code>x</code> so it composes. Device gates it via config (allow on/off, auto-revert seconds).</td></tr>
   </table>
+  <p>Classic one-liner — fetch a value and show it on the dongle's screen:</p>
+<pre><code>show("Oslo: " + fetch_json(
+  "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=59.91&amp;lon=10.75",
+  "properties.timeseries.0.data.instant.details.air_temperature") + " C")
+# screen shows:  Oslo: 14.9 C   (and the call returns that string)</code></pre>
 </section>
 
 <section>

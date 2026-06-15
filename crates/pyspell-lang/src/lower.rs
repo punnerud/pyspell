@@ -56,6 +56,7 @@ pub(crate) fn builtin_from(name: &str) -> Result<Builtin, DslError> {
         "json_get" => Builtin::JsonGet,
         "fetch" => Builtin::Fetch,
         "fetch_json" => Builtin::FetchJson,
+        "show" => Builtin::Show,
         _ => return Err(DslError::Forbidden(format!("function `{name}()`"))),
     })
 }

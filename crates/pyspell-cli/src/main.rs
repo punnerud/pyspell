@@ -10,7 +10,7 @@ use std::io::Write; // brought in scope for write_all/flush on the serial link
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use pyspell_core::{env::VecEnv, eval, value::Value, wire, DslError, Limits, Net};
+use pyspell_core::{env::VecEnv, eval, value::Value, wire, Display, DslError, Limits, Net};
 use pyspell_lang::{compile, lang_from_extension, Lang};
 
 #[derive(Parser)]
@@ -111,7 +111,13 @@ fn real_main() -> Result<(), String> {
             let program = compile(&src, lang).map_err(|e| e.to_string())?;
             let env = build_env(&sets)?;
             let net = HttpNet { allow: allow_hosts };
-            let limits = Limits { max_steps: program.max_steps, deadline: None, net: Some(&net) };
+            let disp = StdoutDisplay;
+            let limits = Limits {
+                max_steps: program.max_steps,
+                deadline: None,
+                net: Some(&net),
+                display: Some(&disp),
+            };
             let value = eval::run_with(&program, &env, limits).map_err(|e| e.to_string())?;
             println!("{}", show(&value));
             Ok(())
@@ -226,6 +232,15 @@ impl Net for HttpNet {
             .call()
             .map_err(|e| DslError::Net(format!("{e}")))?;
         resp.into_string().map_err(|e| DslError::Net(format!("read body: {e}")))
+    }
+}
+
+/// Host `show()` target: just print to stdout (the device draws on its screen).
+struct StdoutDisplay;
+impl Display for StdoutDisplay {
+    fn show(&self, text: &str) -> Result<(), DslError> {
+        println!("[show] {text}");
+        Ok(())
     }
 }
 

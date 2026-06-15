@@ -66,8 +66,13 @@ fn run(method: &str, query: &str, body: &[u8]) -> String {
 
     let env = device_env();
     let net = crate::net::DeviceNet;
-    let limits =
-        Limits { max_steps: 2_000_000, deadline: Some(&deadline), net: Some(&net) };
+    let disp = crate::display::DeviceDisplay;
+    let limits = Limits {
+        max_steps: 2_000_000,
+        deadline: Some(&deadline),
+        net: Some(&net),
+        display: Some(&disp),
+    };
     match eval::run_with(&program, &env, limits) {
         Ok(v) => show(&v),
         Err(e) => format!("error: {e}"),

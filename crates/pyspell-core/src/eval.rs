@@ -20,6 +20,13 @@ use crate::ir::{BinOp, BoolOp, Builtin, CmpOp, Expr, Program, UnOp, Value};
 /// evaluator itself performs no I/O — this is the single mediated effect, so the
 /// host (CLI: an HTTP client; device: esp-idf + a config allowlist) controls
 /// exactly what a program may reach. `None` installed → `fetch` errors.
+/// A host-provided display capability for the `show(x)` builtin (e.g. the ESP32
+/// screen, or stdout on the host). Kept out of the pure evaluator — the host
+/// decides whether display is allowed and how it behaves (revert timer, etc.).
+pub trait Display {
+    fn show(&self, text: &str) -> Result<(), DslError>;
+}
+
 pub trait Net {
     /// Fetch the whole response body as a string.
     fn fetch(&self, url: &str) -> Result<String, DslError>;
@@ -44,6 +51,7 @@ pub trait Net {
 struct Frame<'a> {
     env: &'a dyn Env,
     net: Option<&'a dyn Net>,
+    display: Option<&'a dyn Display>,
     locals: Vec<Value>,
     budget: u32,
     /// Optional wall-clock guard: called periodically, returns `true` when the
@@ -63,11 +71,13 @@ pub struct Limits<'a> {
     pub deadline: Option<&'a dyn Fn() -> bool>,
     /// Optional network capability for `fetch` (see [`Net`]).
     pub net: Option<&'a dyn Net>,
+    /// Optional display capability for `show` (see [`Display`]).
+    pub display: Option<&'a dyn Display>,
 }
 
 impl Default for Limits<'_> {
     fn default() -> Self {
-        Limits { max_steps: crate::ir::DEFAULT_MAX_STEPS, deadline: None, net: None }
+        Limits { max_steps: crate::ir::DEFAULT_MAX_STEPS, deadline: None, net: None, display: None }
     }
 }
 
@@ -79,7 +89,11 @@ const DEADLINE_CHECK_INTERVAL: u32 = 256;
 /// [`Value`]. Uses the program's own `max_steps` and no wall-clock timeout. The
 /// result interpretation (bool predicate, numeric score, …) is the caller's.
 pub fn run<E: Env>(program: &Program, env: &E) -> Result<Value, DslError> {
-    run_with(program, env, Limits { max_steps: program.max_steps, deadline: None, net: None })
+    run_with(
+        program,
+        env,
+        Limits { max_steps: program.max_steps, deadline: None, net: None, display: None },
+    )
 }
 
 /// Evaluate with explicit [`Limits`] — a step budget plus an optional wall-clock
@@ -89,6 +103,7 @@ pub fn run_with<E: Env>(program: &Program, env: &E, limits: Limits) -> Result<Va
     let mut f = Frame {
         env,
         net: limits.net,
+        display: limits.display,
         locals: vec_filled(program.n_locals as usize),
         budget: limits.max_steps,
         deadline: limits.deadline,
@@ -514,6 +529,19 @@ fn call_builtin(b: Builtin, args: &[Expr], f: &mut Frame) -> Result<Value, DslEr
             };
             net.fetch_extract(&url, &probe)
         }
+        Builtin::Show => {
+            if vals.len() != 1 {
+                return Err(arity_err(vals.len()));
+            }
+            let text = to_str(&vals[0]);
+            match f.display {
+                Some(d) => {
+                    d.show(&text)?;
+                    Ok(vals.into_iter().next().unwrap()) // return the shown value
+                }
+                None => Err(DslError::Display("no display capability installed".to_string())),
+            }
+        }
     }
 }
 
@@ -610,6 +638,7 @@ fn builtin_name(b: Builtin) -> &'static str {
         Builtin::JsonGet => "json_get",
         Builtin::Fetch => "fetch",
         Builtin::FetchJson => "fetch_json",
+        Builtin::Show => "show",
     }
 }
 

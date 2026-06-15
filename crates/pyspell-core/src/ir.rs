@@ -85,6 +85,10 @@ pub enum Builtin {
     /// scalar at the JSON path, stopping as soon as it's found. Memory-optimal:
     /// the device never buffers the whole body. See [`crate::eval::Net::fetch_extract`].
     FetchJson,
+    /// `show(x)` → render `x` to text and display it (a host-provided
+    /// [`crate::eval::Display`] capability, e.g. the ESP32 screen), returning `x`
+    /// so it composes. Errors if no display capability is installed.
+    Show,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
