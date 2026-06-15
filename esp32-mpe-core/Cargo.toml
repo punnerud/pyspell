@@ -1,0 +1,35 @@
+# esp32-mpe-core — a pure-Rust, no_std ESP32-S3 baseline (esp-rs stack), used to
+# MEASURE how much RAM the lean stack leaves vs esp-idf. If the free-heap number
+# here is much higher than esp-idf's ~60 kB, re-platforming PySpell+Tailscale
+# onto esp-hal/esp-wifi/smoltcp/embedded-tls is worth the (months of) work.
+#
+# Its own workspace (no_std, target xtensa-esp32s3-none-elf, toolchain `esp`).
+[workspace]
+
+[package]
+name = "esp32-mpe-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["morten@punnerud.net"]
+
+[[bin]]
+name = "esp32-mpe-core"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+
+[dependencies]
+esp-hal = { version = "0.23.1", features = ["esp32s3", "unstable"] }
+esp-alloc = "0.6.0"
+esp-backtrace = { version = "0.15.0", features = ["esp32s3", "panic-handler", "println"] }
+esp-println = { version = "0.13.0", default-features = false, features = ["esp32s3", "log", "jtag-serial"] }
+esp-wifi = { version = "0.12.0", default-features = false, features = [
+    "esp32s3",
+    "wifi",
+    "esp-alloc",
+    "log",
+] }
+esp-bootloader-esp-idf = "0.5.0"
