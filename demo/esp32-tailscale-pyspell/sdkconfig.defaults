@@ -51,3 +51,7 @@ CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
 # Shallower lwIP queues (we raised UDP mbox to 64 for throughput; 16 frees RAM).
 CONFIG_LWIP_UDP_RECVMBOX_SIZE=16
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=16
+# Raise the socket pool (default 10) so the parallel PySpell LAN pool has sockets
+# beyond what tailscale (DERP/control/UDP/mDNS) holds — the real ceiling on
+# simultaneous connections. 16 is the esp-idf max.
+CONFIG_LWIP_MAX_SOCKETS=16

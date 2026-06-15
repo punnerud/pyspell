@@ -89,8 +89,13 @@ pub fn fetch_map(sess: &mut h2::H2, keys: &NodeKeys) -> Result<MapResult> {
 }
 
 /// Fresh connection + a single full map (OmitPeers=false), advertising our own
-/// `endpoints`, and parse out the peer list (node/disco keys + endpoints) plus
-/// our Tailscale IP. Frugal: holds the raw body but never builds a serde Value.
+/// `endpoints`. STREAMED: the response is parsed incrementally with
+/// `serde_json::from_reader` over the HTTP/2 DATA frames, so the large netmap
+/// (DERPMap, user profiles, …) is skipped field-by-field instead of buffered. Peak
+/// memory drops from the whole body (~60 kB) to ~one DATA frame + the small peer
+/// list — freeing the transient headroom the demo otherwise had to reserve. Returns
+/// the peer list, our Tailscale IP (scanned from the first chunks), and the
+/// packet-filter allowed sources.
 pub fn fetch_peers(
     machine_priv: &[u8; 32],
     control_pub: &[u8; 32],
@@ -99,15 +104,174 @@ pub fn fetch_peers(
 ) -> Result<(Option<String>, Vec<peers::PeerInfo>, Option<Vec<peers::Cidr>>)> {
     let mut sess = connect(machine_priv, control_pub)?;
     let body = build_map_json(keys, false, false, false, endpoints);
-    let (_status, resp) = sess
-        .post_json("/machine/map", body.as_bytes())
-        .context("POST /machine/map (peers)")?;
-    let ip = scan_tailscale_ip(&resp);
-    let list = peers::parse_peers(&resp)?;
-    let allowed = ip
-        .as_deref()
-        .and_then(|our| peers::parse_allowed_srcs(&resp, our));
+    let sid = sess
+        .post_stream("/machine/map", body.as_bytes())
+        .context("POST /machine/map (peers, streamed)")?;
+
+    let mut reader = H2Body {
+        sess: &mut sess,
+        sid,
+        buf: Vec::new(),
+        pos: 0,
+        eof: false,
+        prefix_stripped: false,
+        ip: None,
+    };
+    let m: MapStreamResp =
+        serde_json::from_reader(&mut reader).context("stream-parse MapResponse")?;
+    let ip = reader.ip.clone();
+
+    let list: Vec<peers::PeerInfo> = m
+        .peers
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| {
+            let node_key = p.key.as_deref().and_then(peers::parse_keyed_hex)?;
+            let disco_key = p.disco_key.as_deref().and_then(peers::parse_keyed_hex)?;
+            let tailscale_ip = p
+                .addresses
+                .unwrap_or_default()
+                .into_iter()
+                .map(|a| a.split('/').next().unwrap_or("").to_string())
+                .find(|a| a.starts_with("100."));
+            let hostname = p
+                .hostinfo
+                .and_then(|h| h.hostname)
+                .unwrap_or_else(|| "?".to_string());
+            Some(peers::PeerInfo {
+                node_key,
+                disco_key,
+                tailscale_ip,
+                endpoints: p.endpoints.unwrap_or_default(),
+                hostname,
+            })
+        })
+        .collect();
+
+    // Packet-filter allowed-source CIDRs (mirrors peers::parse_allowed_srcs, but on
+    // the streamed structs instead of a buffered body).
+    let allowed = ip.as_deref().and_then(|our| {
+        let rules = m.packet_filter?;
+        let ours = peers::parse_cidr(&format!("{our}/32"))?;
+        let mut out = Vec::new();
+        for rule in rules {
+            let covers_us = rule
+                .dst_ports
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|d| d.ip)
+                .any(|ip| ip == "*" || peers::cidr_contains(peers::parse_cidr(&ip), ours.0));
+            if !covers_us {
+                continue;
+            }
+            for s in rule.src_ips.unwrap_or_default() {
+                if s == "*" {
+                    out.push((0u32, 0u32));
+                } else if let Some(c) = peers::parse_cidr(&s) {
+                    out.push(c);
+                }
+            }
+        }
+        Some(out)
+    });
+
     Ok((ip, list, allowed))
+}
+
+// --- streaming MapResponse parse (std: serde_json::from_reader over h2 frames) ---
+// Typed structs naming only the fields we keep; serde skips everything else
+// (DERPMap, profiles, …) without allocating it.
+
+#[derive(serde::Deserialize)]
+struct MapStreamResp {
+    #[serde(rename = "Peers")]
+    peers: Option<Vec<PeerTS>>,
+    #[serde(rename = "PacketFilter")]
+    packet_filter: Option<Vec<FilterRuleS>>,
+}
+#[derive(serde::Deserialize)]
+struct PeerTS {
+    #[serde(rename = "Key")]
+    key: Option<String>,
+    #[serde(rename = "DiscoKey")]
+    disco_key: Option<String>,
+    #[serde(rename = "Addresses")]
+    addresses: Option<Vec<String>>,
+    #[serde(rename = "Endpoints")]
+    endpoints: Option<Vec<String>>,
+    #[serde(rename = "Hostinfo")]
+    hostinfo: Option<HostinfoS>,
+}
+#[derive(serde::Deserialize)]
+struct HostinfoS {
+    #[serde(rename = "Hostname")]
+    hostname: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct FilterRuleS {
+    #[serde(rename = "SrcIPs")]
+    src_ips: Option<Vec<String>>,
+    #[serde(rename = "DstPorts")]
+    dst_ports: Option<Vec<NetPortRangeS>>,
+}
+#[derive(serde::Deserialize)]
+struct NetPortRangeS {
+    #[serde(rename = "IP")]
+    ip: Option<String>,
+}
+
+/// `io::Read` over an HTTP/2 response stream: pulls DATA frames on demand (never
+/// holding more than one), strips the 4-byte wire length prefix, and scans the
+/// first chunks for our 100.x address. This is what makes the parse streaming.
+struct H2Body<'a> {
+    sess: &'a mut h2::H2,
+    sid: u32,
+    buf: Vec<u8>,
+    pos: usize,
+    eof: bool,
+    prefix_stripped: bool,
+    ip: Option<String>,
+}
+
+impl std::io::Read for H2Body<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        while self.pos >= self.buf.len() {
+            if self.eof {
+                return Ok(0);
+            }
+            match self.sess.read_response_chunk(self.sid) {
+                Ok((Some(chunk), end)) => {
+                    self.eof = end;
+                    if self.ip.is_none() {
+                        if let Some(found) = scan_tailscale_ip(&chunk) {
+                            self.ip = Some(found);
+                        }
+                    }
+                    self.buf = chunk;
+                    self.pos = 0;
+                    if !self.prefix_stripped {
+                        self.prefix_stripped = true;
+                        if self.buf.len() >= 5 && self.buf[0] != b'{' && self.buf[4] == b'{' {
+                            self.pos = 4;
+                        }
+                    }
+                }
+                Ok((None, end)) => {
+                    self.eof = end;
+                    if end {
+                        return Ok(0);
+                    }
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::Other, format!("{e}")));
+                }
+            }
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
 }
 
 /// Report our UDP endpoints to the control server so it distributes them to

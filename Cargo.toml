@@ -13,7 +13,12 @@ members = [
     "crates/pyspell-cli",
 ]
 # The ESP32-S3 firmwares are their own workspaces (different target/toolchain).
-exclude = ["firmware/esp32s3", "demo/esp32-tailscale-pyspell"]
+exclude = [
+    "firmware/esp32s3",
+    "demo/esp32-tailscale-pyspell",
+    "esp32-mpe-core",
+    "esp32-mpe-fetch",
+]
 
 [workspace.package]
 version = "0.1.0"

@@ -35,6 +35,16 @@ pub trait ByteStream {
     fn write_all(&mut self, buf: &[u8]) -> Result<(), ()>;
 }
 
+/// Async sibling of [`ByteStream`] for cooperative (embassy) adapters that cannot
+/// block. The control path has an async variant (`transport::AsyncConn`,
+/// `h2::AsyncH2`) built on this; generic (not `dyn`) since native async-fn-in-trait
+/// is not yet dyn-compatible, and there is one impl per firmware.
+#[allow(async_fn_in_trait)]
+pub trait AsyncByteStream {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()>;
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), ()>;
+}
+
 /// UDP socket for the data plane (STUN + disco + WireGuard share one).
 pub trait UdpSock {
     fn local_port(&self) -> u16;

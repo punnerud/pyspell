@@ -46,6 +46,13 @@ mod ui;
 mod pyspell_web;
 #[cfg(feature = "pyspell")]
 mod net;
+// Local-LAN parallel PySpell: worker-pool HTTP server on the WiFi IP (the in-tunnel
+// server stays single-connection). Uses the demo's heap headroom for concurrency.
+#[cfg(feature = "pyspell")]
+mod local_server;
+// Rolling PySpell job counters (10s/60s/10min/60min) for the status display.
+// Unconditional: the UI thread always draws them (counts are 0 without pyspell jobs).
+mod jobcount;
 #[cfg(feature = "pyspell")]
 mod display;
 
@@ -200,6 +207,22 @@ fn main() -> Result<()> {
         esp_idf_svc::sys::esp_wifi_set_ps(ps_mode);
     }
     println!("wifi power-save mode set: {:?}", config::WIFI_POWER_SAVE);
+
+    // Local-LAN parallel PySpell pool. Now viable because streaming fetch_peers removed
+    // the big transient that used to starve the heap. THIN compute workers (no mbedTLS →
+    // small stacks): 8 × ~12 kB ≈ 96 kB, which fits once the netmap transient is gone.
+    // fetch_json is kept OFF this pool (local_server rejects it) so a thin stack never
+    // hits mbedTLS and overflows — fetches go via the in-tunnel server (esp-idf TLS is
+    // single-at-a-time anyway). So: 8 parallel COMPUTE on the demo + full tailscale.
+    // The parallel PySpell worker pool is DISABLED: on this chip it prevents stable
+    // "green" online status. Green = the control-plane /machine/map long-poll staying
+    // open; the pool's worker stacks (~96 kB) + its burst socket use starve the heap
+    // and sockets that the map-poll reconnect (Noise + h2) needs, so the node never
+    // holds the poll → never green. The map-poll/green code is unchanged and held green
+    // before the pool. Parallel PySpell belongs on the lean esp-rs stack (separate,
+    // more headroom). To re-enable for experiments, restore local_server::run(...) here.
+    // #[cfg(feature = "pyspell")]
+    // { local_server::run(8, 12 * 1024) spawned after a 15 s delay — see git history }
 
     // subnet-router/exit-node: enable NAPT on the STA netif (data-path foundation;
     // the WG-netif bridge is the remaining deep work — see router.rs).
@@ -510,81 +533,71 @@ fn main() -> Result<()> {
                     };
                     let mut ts = String::from("connecting...");
                     let mut lan = lan0;
+                    let mut online = false;
                     let mut backlight_on = true;
-                    let _ = draw_message(
-                        &mut display,
-                        "Tailscale",
-                        &[ts.as_str(), lan.as_str(), "web panel ready", ""],
-                    );
-                    while let Ok(cmd) = ui_rx.recv() {
-                        match cmd {
-                            UiCommand::LedOn => led(31, 255, 255, 255),
-                            UiCommand::LedOff => led(0, 0, 0, 0),
-                            UiCommand::BacklightOn => {
-                                let _ = backlight.set_low();
-                                backlight_on = true;
-                            }
-                            UiCommand::BacklightOff => {
-                                let _ = backlight.set_high();
-                                backlight_on = false;
-                            }
-                            UiCommand::Flash => {
-                                if !backlight_on {
+                    let _ = draw_default_screen(&mut display, &ts, &lan, online);
+                    // recv_timeout(1s): on a command, handle it; on timeout, redraw the
+                    // default screen so the rolling PySpell counters stay live.
+                    loop {
+                        match ui_rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                            Ok(cmd) => match cmd {
+                                UiCommand::LedOn => led(31, 255, 255, 255),
+                                UiCommand::LedOff => led(0, 0, 0, 0),
+                                UiCommand::BacklightOn => {
                                     let _ = backlight.set_low();
+                                    backlight_on = true;
                                 }
-                                for _ in 0..3 {
-                                    let _ = display.clear(Rgb565::WHITE);
-                                    FreeRtos::delay_ms(500);
-                                    let _ = display.clear(Rgb565::BLACK);
-                                    FreeRtos::delay_ms(500);
-                                }
-                                if !backlight_on {
+                                UiCommand::BacklightOff => {
                                     let _ = backlight.set_high();
-                                } else {
-                                    let _ = draw_message(
-                                        &mut display,
-                                        "Tailscale online",
-                                        &[ts.as_str(), lan.as_str(), "status: green", ""],
-                                    );
+                                    backlight_on = false;
                                 }
-                            }
-                            UiCommand::Text(s) => {
-                                if !backlight_on {
-                                    let _ = backlight.set_low();
-                                    backlight_on = true;
+                                UiCommand::Flash => {
+                                    if !backlight_on {
+                                        let _ = backlight.set_low();
+                                    }
+                                    for _ in 0..3 {
+                                        let _ = display.clear(Rgb565::WHITE);
+                                        FreeRtos::delay_ms(500);
+                                        let _ = display.clear(Rgb565::BLACK);
+                                        FreeRtos::delay_ms(500);
+                                    }
+                                    if !backlight_on {
+                                        let _ = backlight.set_high();
+                                    } else {
+                                        let _ = draw_default_screen(&mut display, &ts, &lan, online);
+                                    }
                                 }
-                                let lines = wrap_text(&s, 30, 7);
-                                let refs: Vec<&str> = lines.iter().map(|l| l.as_str()).collect();
-                                let _ = draw_message(&mut display, "Melding", &refs);
-                            }
-                            UiCommand::DefaultScreen => {
-                                if !backlight_on {
-                                    let _ = backlight.set_low();
-                                    backlight_on = true;
+                                UiCommand::Text(s) => {
+                                    if !backlight_on {
+                                        let _ = backlight.set_low();
+                                        backlight_on = true;
+                                    }
+                                    let lines = wrap_text(&s, 30, 7);
+                                    let refs: Vec<&str> = lines.iter().map(|l| l.as_str()).collect();
+                                    let _ = draw_message(&mut display, "Melding", &refs);
                                 }
-                                let _ = draw_message(
-                                    &mut display,
-                                    "Tailscale online",
-                                    &[ts.as_str(), lan.as_str(), "status: green", ""],
-                                );
-                            }
-                            UiCommand::Status { ts: t, lan: l, online } => {
-                                ts = t;
-                                lan = l;
-                                let title = if online {
-                                    "Tailscale online"
-                                } else {
-                                    "Tailscale offline"
-                                };
-                                let s3 = if online { "status: green" } else { "reconnecting..." };
+                                UiCommand::DefaultScreen => {
+                                    if !backlight_on {
+                                        let _ = backlight.set_low();
+                                        backlight_on = true;
+                                    }
+                                    let _ = draw_default_screen(&mut display, &ts, &lan, online);
+                                }
+                                UiCommand::Status { ts: t, lan: l, online: o } => {
+                                    ts = t;
+                                    lan = l;
+                                    online = o;
+                                    if backlight_on {
+                                        let _ = draw_default_screen(&mut display, &ts, &lan, online);
+                                    }
+                                }
+                            },
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                                 if backlight_on {
-                                    let _ = draw_message(
-                                        &mut display,
-                                        title,
-                                        &[ts.as_str(), lan.as_str(), s3, ""],
-                                    );
+                                    let _ = draw_default_screen(&mut display, &ts, &lan, online);
                                 }
                             }
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                         }
                     }
                 });
@@ -859,4 +872,29 @@ where
             .draw(display)?;
     }
     Ok(())
+}
+
+/// Default status screen: online state in the title, then the tailscale IP + LAN
+/// address, then the 4 rolling PySpell job counters (10s/60s/10min/60min). Redrawn
+/// every second so the counters stay live.
+fn draw_default_screen<D>(
+    display: &mut D,
+    ts: &str,
+    lan: &str,
+    online: bool,
+) -> std::result::Result<(), D::Error>
+where
+    D: DrawTarget<Color = Rgb565>,
+{
+    let (s10, s60, m10, m60) = jobcount::counts();
+    let title = if online { "TS online" } else { "TS offline" };
+    let l10 = format!("10s: {s10}");
+    let l60 = format!("60s: {s60}");
+    let l10m = format!("10m: {m10}");
+    let l60m = format!("60m: {m60}");
+    draw_message(
+        display,
+        title,
+        &[ts, lan, l10.as_str(), l60.as_str(), l10m.as_str(), l60m.as_str()],
+    )
 }

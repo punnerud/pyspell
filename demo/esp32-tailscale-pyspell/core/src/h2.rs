@@ -10,7 +10,8 @@ use alloc::vec::Vec;
 use anyhow::{bail, Result};
 
 use crate::noise::{self, Transport};
-use crate::transport::Conn;
+use crate::platform::AsyncByteStream;
+use crate::transport::{AsyncConn, Conn};
 
 const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 const EARLY_MAGIC: &[u8] = b"\xff\xff\xffTS";
@@ -153,6 +154,44 @@ impl H2 {
                     }
                 }
                 FT_GOAWAY => bail!("server GOAWAY on map stream"),
+                _ => {}
+            }
+        }
+    }
+
+    /// Read the next DATA chunk of a one-shot response, frame by frame, WITHOUT
+    /// accumulating the whole body. Returns `(payload, is_end)`: `payload` is `None`
+    /// for an end-only frame, `is_end` is true once the server set END_STREAM. Lets a
+    /// std caller wrap this in `io::Read` and feed `serde_json::from_reader` so a large
+    /// MapResponse (DERPMap etc.) is parsed incrementally instead of buffered (~60 kB).
+    pub fn read_response_chunk(&mut self, stream_id: u32) -> Result<(Option<Vec<u8>>, bool)> {
+        loop {
+            let fr = self.read_frame()?;
+            if fr.stream_id != stream_id && fr.stream_id != 0 {
+                continue;
+            }
+            match fr.typ {
+                FT_HEADERS => {
+                    if fr.flags & FL_END_STREAM != 0 {
+                        return Ok((None, true));
+                    }
+                }
+                FT_DATA => {
+                    let end = fr.flags & FL_END_STREAM != 0;
+                    if !fr.payload.is_empty() {
+                        self.window_update(stream_id, fr.payload.len() as u32)?;
+                        return Ok((Some(fr.payload), end));
+                    }
+                    if end {
+                        return Ok((None, true));
+                    }
+                }
+                FT_SETTINGS => {
+                    if fr.flags & FL_ACK == 0 {
+                        self.send(&frame(FT_SETTINGS, FL_ACK, 0, &[]))?;
+                    }
+                }
+                FT_GOAWAY => bail!("server GOAWAY (response stream)"),
                 _ => {}
             }
         }
@@ -357,5 +396,234 @@ fn strip_wire_prefix(body: Vec<u8>) -> Vec<u8> {
         body[4..].to_vec()
     } else {
         body
+    }
+}
+
+// --- Async variant (for cooperative embassy adapters) -----------------------
+
+fn settings_payload() -> [u8; 18] {
+    [
+        0x00, 0x02, 0x00, 0x00, 0x00, 0x00, // ENABLE_PUSH = 0
+        // INITIAL_WINDOW_SIZE = one max frame. Caps the server's in-flight DATA per
+        // stream, so a big response (the netmap / DERP map) is paced one frame at a
+        // time behind our WINDOW_UPDATEs instead of arriving as one ~64 kB Noise
+        // record that would pin tens of kB in the receive buffer on a tight heap.
+        0x00, 0x04, // SETTINGS_INITIAL_WINDOW_SIZE
+        (MAX_FRAME_SIZE >> 24) as u8,
+        (MAX_FRAME_SIZE >> 16) as u8,
+        (MAX_FRAME_SIZE >> 8) as u8,
+        MAX_FRAME_SIZE as u8,
+        0x00, 0x05, // MAX_FRAME_SIZE
+        (MAX_FRAME_SIZE >> 24) as u8,
+        (MAX_FRAME_SIZE >> 16) as u8,
+        (MAX_FRAME_SIZE >> 8) as u8,
+        MAX_FRAME_SIZE as u8,
+    ]
+}
+
+fn req_headers(authority: &str, path: &str, body_len: usize) -> Vec<u8> {
+    let mut hdr = Vec::new();
+    enc_header(&mut hdr, ":method", "POST");
+    enc_header(&mut hdr, ":scheme", "http");
+    enc_header(&mut hdr, ":authority", authority);
+    enc_header(&mut hdr, ":path", path);
+    enc_header(&mut hdr, "content-type", "application/json");
+    enc_header(&mut hdr, "content-length", &body_len.to_string());
+    enc_header(&mut hdr, "accept", "application/json");
+    hdr
+}
+
+/// Async sibling of [`H2`], generic over an [`AsyncByteStream`].
+pub struct AsyncH2<S: AsyncByteStream> {
+    conn: AsyncConn<S>,
+    tr: Transport,
+    rx: Vec<u8>,
+    next_stream: u32,
+    authority: String,
+}
+
+impl<S: AsyncByteStream> AsyncH2<S> {
+    pub async fn start(
+        conn: AsyncConn<S>,
+        tr: Transport,
+        authority: String,
+    ) -> Result<(Self, Option<Vec<u8>>)> {
+        let mut h = AsyncH2 { conn, tr, rx: Vec::new(), next_stream: 1, authority };
+        let mut hello = Vec::new();
+        hello.extend_from_slice(PREFACE);
+        hello.extend_from_slice(&frame(FT_SETTINGS, 0, 0, &settings_payload()));
+        h.send(&hello).await?;
+
+        let early = h.consume_early_payload().await?;
+
+        loop {
+            let fr = h.read_frame().await?;
+            match fr.typ {
+                FT_SETTINGS => {
+                    if fr.flags & FL_ACK == 0 {
+                        h.send(&frame(FT_SETTINGS, FL_ACK, 0, &[])).await?;
+                    }
+                    break;
+                }
+                FT_WINDOW_UPDATE | FT_HEADERS | FT_DATA => continue,
+                FT_GOAWAY => bail!("server GOAWAY during startup"),
+                _ => continue,
+            }
+        }
+        Ok((h, early))
+    }
+
+    pub async fn post_json(&mut self, path: &str, body: &[u8]) -> Result<(u16, Vec<u8>)> {
+        let stream_id = self.next_stream;
+        self.next_stream += 2;
+        let hdr = req_headers(&self.authority, path, body.len());
+        let mut out = Vec::new();
+        out.extend_from_slice(&frame(FT_HEADERS, FL_END_HEADERS, stream_id, &hdr));
+        out.extend_from_slice(&frame(FT_DATA, FL_END_STREAM, stream_id, body));
+        self.send(&out).await?;
+        self.read_response(stream_id).await
+    }
+
+    pub async fn post_stream(&mut self, path: &str, body: &[u8]) -> Result<u32> {
+        let stream_id = self.next_stream;
+        self.next_stream += 2;
+        let hdr = req_headers(&self.authority, path, body.len());
+        let mut out = Vec::new();
+        out.extend_from_slice(&frame(FT_HEADERS, FL_END_HEADERS, stream_id, &hdr));
+        out.extend_from_slice(&frame(FT_DATA, FL_END_STREAM, stream_id, body));
+        self.send(&out).await?;
+        Ok(stream_id)
+    }
+
+    pub async fn read_data(&mut self, stream_id: u32) -> Result<Vec<u8>> {
+        loop {
+            let fr = self.read_frame().await?;
+            match fr.typ {
+                FT_DATA if fr.stream_id == stream_id => {
+                    if !fr.payload.is_empty() {
+                        self.window_update(stream_id, fr.payload.len() as u32).await?;
+                        return Ok(fr.payload);
+                    }
+                    if fr.flags & FL_END_STREAM != 0 {
+                        bail!("map stream closed by server");
+                    }
+                }
+                FT_HEADERS => {
+                    if fr.flags & FL_END_STREAM != 0 {
+                        bail!("map stream closed (HEADERS END_STREAM)");
+                    }
+                }
+                FT_SETTINGS => {
+                    if fr.flags & FL_ACK == 0 {
+                        self.send(&frame(FT_SETTINGS, FL_ACK, 0, &[])).await?;
+                    }
+                }
+                FT_GOAWAY => bail!("server GOAWAY on map stream"),
+                _ => {}
+            }
+        }
+    }
+
+    async fn read_response(&mut self, stream_id: u32) -> Result<(u16, Vec<u8>)> {
+        let mut status: u16 = 0;
+        let mut body: Vec<u8> = Vec::new();
+        loop {
+            let fr = self.read_frame().await?;
+            if fr.stream_id != stream_id && fr.stream_id != 0 {
+                continue;
+            }
+            match fr.typ {
+                FT_HEADERS => {
+                    if let Some(s) = decode_status(&fr.payload) {
+                        status = s;
+                    }
+                    if fr.flags & FL_END_STREAM != 0 {
+                        break;
+                    }
+                }
+                FT_DATA => {
+                    body.extend_from_slice(&fr.payload);
+                    if !fr.payload.is_empty() {
+                        self.window_update(stream_id, fr.payload.len() as u32).await?;
+                    }
+                    if fr.flags & FL_END_STREAM != 0 {
+                        break;
+                    }
+                }
+                FT_SETTINGS => {
+                    if fr.flags & FL_ACK == 0 {
+                        self.send(&frame(FT_SETTINGS, FL_ACK, 0, &[])).await?;
+                    }
+                }
+                FT_GOAWAY => bail!("server GOAWAY (status so far {status})"),
+                _ => {}
+            }
+        }
+        Ok((status, strip_wire_prefix(body)))
+    }
+
+    async fn window_update(&mut self, stream_id: u32, inc: u32) -> Result<()> {
+        let p = inc.to_be_bytes();
+        self.send(&frame(FT_WINDOW_UPDATE, 0, stream_id, &p)).await?;
+        self.send(&frame(FT_WINDOW_UPDATE, 0, 0, &p)).await?;
+        Ok(())
+    }
+
+    async fn send(&mut self, data: &[u8]) -> Result<()> {
+        for chunk in data.chunks(2048) {
+            let rec = self.tr.seal_record(chunk)?;
+            self.conn.write_all(&rec).await?;
+        }
+        Ok(())
+    }
+
+    async fn pull(&mut self) -> Result<()> {
+        let (typ, ct) = self.conn.read_frame().await?;
+        match typ {
+            noise::MSG_RECORD => {
+                let pt = self.tr.open_record(&ct)?;
+                self.rx.extend_from_slice(&pt);
+                Ok(())
+            }
+            noise::MSG_ERROR => bail!("control error: {}", String::from_utf8_lossy(&ct)),
+            o => bail!("unexpected control frame type {o}"),
+        }
+    }
+
+    async fn read_exact(&mut self, n: usize) -> Result<Vec<u8>> {
+        while self.rx.len() < n {
+            self.pull().await?;
+        }
+        let out = self.rx[..n].to_vec();
+        self.rx.drain(..n);
+        // Only reclaim capacity once fully drained (cheap — no copy on an empty Vec).
+        // NOTE: shrinking a partially-full large buffer reallocs (copies), which spikes
+        // heap and OOMs under the very pressure we're trying to relieve — so don't.
+        if self.rx.is_empty() && self.rx.capacity() > 8192 {
+            self.rx.shrink_to_fit();
+        }
+        Ok(out)
+    }
+
+    async fn consume_early_payload(&mut self) -> Result<Option<Vec<u8>>> {
+        let hdr = self.read_exact(9).await?;
+        if &hdr[..5] == EARLY_MAGIC {
+            let ep_len = u32::from_be_bytes([hdr[5], hdr[6], hdr[7], hdr[8]]) as usize;
+            let json = self.read_exact(ep_len).await?;
+            Ok(Some(json))
+        } else {
+            self.rx.splice(0..0, hdr);
+            Ok(None)
+        }
+    }
+
+    async fn read_frame(&mut self) -> Result<Frame> {
+        let hdr = self.read_exact(9).await?;
+        let len = ((hdr[0] as usize) << 16) | ((hdr[1] as usize) << 8) | hdr[2] as usize;
+        let typ = hdr[3];
+        let flags = hdr[4];
+        let stream_id = u32::from_be_bytes([hdr[5], hdr[6], hdr[7], hdr[8]]) & 0x7fff_ffff;
+        let payload = if len > 0 { self.read_exact(len).await? } else { Vec::new() };
+        Ok(Frame { typ, flags, stream_id, payload })
     }
 }

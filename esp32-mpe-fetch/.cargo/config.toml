@@ -1,0 +1,16 @@
+[target.xtensa-esp32s3-none-elf]
+runner = "espflash flash --monitor --chip esp32s3"
+
+[env]
+
+[build]
+rustflags = [
+  "-C", "link-arg=-nostartfiles",
+  # getrandom 0.3 (via snow) has no bare-metal backend — use our custom source.
+  "--cfg", 'getrandom_backend="custom"',
+]
+
+target = "xtensa-esp32s3-none-elf"
+
+[unstable]
+build-std = ["alloc", "core"]

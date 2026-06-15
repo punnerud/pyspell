@@ -1,0 +1,24 @@
+//! Copy this file to `src/config.rs` and fill in your WiFi credentials.
+//! `src/config.rs` is gitignored and must NEVER be committed.
+
+/// WiFi network name (SSID) to join in station mode.
+pub const WIFI_SSID: &str = "your-ssid";
+
+/// WiFi password (WPA2). Empty string for an open network.
+pub const WIFI_PASS: &str = "your-password";
+
+/// Host the M3.1 fetch PoC talks to over HTTPS. Default: the met.no weather API.
+pub const FETCH_HOST: &str = "api.met.no";
+
+/// HTTPS path fetched for the PoC (Oslo coordinates).
+pub const FETCH_PATH: &str =
+    "/weatherapi/locationforecast/2.0/compact?lat=59.91&lon=10.75";
+
+/// Hosts a pushed PySpell program may fetch from (the device is not an open proxy).
+pub const FETCH_ALLOW_HOSTS: &[&str] = &["api.met.no"];
+
+// Tailscale node identity (32-byte private keys). Provide your own or let the
+// firmware generate + register (interactive/auth-key). Reused from NVS in this build.
+pub const TS_MACHINE_KEY: [u8; 32] = [0u8; 32];
+pub const TS_NODE_KEY: [u8; 32] = [0u8; 32];
+pub const TS_DISCO_KEY: [u8; 32] = [0u8; 32];
