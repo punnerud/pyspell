@@ -9,9 +9,6 @@
 
 extern crate alloc;
 
-// Embed the ESP-IDF app descriptor espflash 4.x requires to flash the image.
-esp_bootloader_esp_idf::esp_app_desc!();
-
 use esp_backtrace as _;
 use esp_hal::rng::Rng;
 use esp_hal::timer::timg::TimerGroup;
