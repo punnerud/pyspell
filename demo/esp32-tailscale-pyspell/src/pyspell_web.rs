@@ -73,10 +73,14 @@ fn run(method: &str, query: &str, body: &[u8]) -> String {
         net: Some(&net),
         display: Some(&disp),
     };
-    match eval::run_with(&program, &env, limits) {
+    let out = match eval::run_with(&program, &env, limits) {
         Ok(v) => show(&v),
         Err(e) => format!("error: {e}"),
-    }
+    };
+    // Single choke point for ALL PySpell jobs (in-tunnel server + LAN worker pool both
+    // reach here via route()), so the rolling display counters tally every job once.
+    crate::jobcount::record();
+    out
 }
 
 /// Live device variables a program may read.

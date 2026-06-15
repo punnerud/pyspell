@@ -34,7 +34,13 @@ pub fn run(n_workers: usize, worker_stack: usize) {
         }
     };
 
-    let (tx, rx) = mpsc::channel::<TcpStream>();
+    // RENDEZVOUS channel (capacity 0): the acceptor only accept()s the next connection
+    // once a worker takes the current one. An UNBOUNDED queue would accept every burst
+    // connection immediately — and each accepted TcpStream holds an LWIP socket while it
+    // waits — which starved tailscale's DERP socket (10/16-socket pool is shared). With
+    // rendezvous, the pool holds at most ~N_WORKERS+1 sockets; the rest wait in the
+    // listener backlog (no socket fd), reserving the remaining sockets for tailscale.
+    let (tx, rx) = mpsc::sync_channel::<TcpStream>(0);
     let rx = Arc::new(Mutex::new(rx));
     for i in 0..n_workers {
         let rx = Arc::clone(&rx);
@@ -70,7 +76,9 @@ fn worker_loop(id: usize, rx: Arc<Mutex<Receiver<TcpStream>>>) {
 }
 
 fn handle(id: usize, mut stream: TcpStream) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
+    // Short read timeout: a connection stalled by a transient socket-pool peak frees
+    // its worker quickly (instead of blocking it ~15 s), so the pool recovers fast.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(6)));
 
     // Read until the header terminator.
     let mut buf: Vec<u8> = Vec::with_capacity(2048);
