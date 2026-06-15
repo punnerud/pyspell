@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 
 use anyhow::{bail, Result};
 
-use crate::platform::ByteStream;
+use crate::platform::{AsyncByteStream, ByteStream};
 
 const UPGRADE_VALUE: &str = "tailscale-control-protocol";
 
@@ -113,6 +113,114 @@ impl Conn {
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+// --- Async variant (for cooperative embassy adapters) -----------------------
+
+/// Async sibling of [`Conn`], generic over an [`AsyncByteStream`].
+pub struct AsyncConn<S: AsyncByteStream> {
+    stream: S,
+    rx: Vec<u8>,
+}
+
+/// Async [`connect_and_upgrade`].
+pub async fn connect_and_upgrade_async<S: AsyncByteStream>(
+    stream: S,
+    host: &str,
+    handshake_b64: &str,
+) -> Result<AsyncConn<S>> {
+    let mut conn = AsyncConn { stream, rx: Vec::new() };
+    let req = format!(
+        "POST /ts2021 HTTP/1.1\r\n\
+         Host: {host}\r\n\
+         Upgrade: {UPGRADE_VALUE}\r\n\
+         Connection: upgrade\r\n\
+         X-Tailscale-Handshake: {handshake_b64}\r\n\
+         Content-Length: 0\r\n\r\n"
+    );
+    conn.stream
+        .write_all(req.as_bytes())
+        .await
+        .map_err(|_| anyhow::anyhow!("upgrade write"))?;
+
+    let mut head = Vec::new();
+    let mut tmp = [0u8; 512];
+    let body_start;
+    loop {
+        let n = conn
+            .stream
+            .read(&mut tmp)
+            .await
+            .map_err(|_| anyhow::anyhow!("upgrade read"))?;
+        if n == 0 {
+            bail!("connection closed during upgrade");
+        }
+        head.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = find(&head, b"\r\n\r\n") {
+            body_start = pos + 4;
+            break;
+        }
+        if head.len() > 8192 {
+            bail!("upgrade response headers too large");
+        }
+    }
+    let status_line = head
+        .split(|&b| b == b'\n')
+        .next()
+        .map(|l| String::from_utf8_lossy(l).trim().to_string())
+        .unwrap_or_default();
+    if !status_line.contains(" 101 ") {
+        let body = String::from_utf8_lossy(&head[body_start.min(head.len())..]);
+        bail!("upgrade failed: '{status_line}' body='{}'", body.trim());
+    }
+    conn.rx.extend_from_slice(&head[body_start..]);
+    Ok(conn)
+}
+
+impl<S: AsyncByteStream> AsyncConn<S> {
+    async fn fill_to(&mut self, n: usize) -> Result<()> {
+        let mut tmp = [0u8; 2048];
+        while self.rx.len() < n {
+            let r = self
+                .stream
+                .read(&mut tmp)
+                .await
+                .map_err(|_| anyhow::anyhow!("stream read"))?;
+            if r == 0 {
+                bail!("connection closed (wanted {n}, have {})", self.rx.len());
+            }
+            self.rx.extend_from_slice(&tmp[..r]);
+        }
+        Ok(())
+    }
+
+    async fn take(&mut self, n: usize) -> Result<Vec<u8>> {
+        self.fill_to(n).await?;
+        let out = self.rx[..n].to_vec();
+        self.rx.drain(..n);
+        // `drain` keeps capacity; a large frame (e.g. the initial netmap) would
+        // otherwise pin tens of kB forever. Release it once the buffer empties.
+        if self.rx.is_empty() && self.rx.capacity() > 8192 {
+            self.rx.shrink_to_fit();
+        }
+        Ok(out)
+    }
+
+    /// Read one controlbase frame: 3-byte header [type][len BE u16] + payload.
+    pub async fn read_frame(&mut self) -> Result<(u8, Vec<u8>)> {
+        let hdr = self.take(3).await?;
+        let typ = hdr[0];
+        let len = u16::from_be_bytes([hdr[1], hdr[2]]) as usize;
+        let payload = self.take(len).await?;
+        Ok((typ, payload))
+    }
+
+    pub async fn write_all(&mut self, data: &[u8]) -> Result<()> {
+        self.stream
+            .write_all(data)
+            .await
+            .map_err(|_| anyhow::anyhow!("stream write"))
+    }
 }
 
 /// Minimal standard base64 (with padding) — used for the handshake header.

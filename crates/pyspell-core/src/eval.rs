@@ -83,7 +83,7 @@ impl Default for Limits<'_> {
 
 /// Check the wall-clock deadline at most this often (in steps) to keep the cost
 /// of a clock read off the hot path.
-const DEADLINE_CHECK_INTERVAL: u32 = 256;
+pub(crate) const DEADLINE_CHECK_INTERVAL: u32 = 256;
 
 /// Evaluate a compiled program against a host environment, returning its final
 /// [`Value`]. Uses the program's own `max_steps` and no wall-clock timeout. The
@@ -116,7 +116,7 @@ pub fn run_with<E: Env>(program: &Program, env: &E, limits: Limits) -> Result<Va
     eval(&program.ret, &mut f)
 }
 
-fn vec_filled(n: usize) -> Vec<Value> {
+pub(crate) fn vec_filled(n: usize) -> Vec<Value> {
     let mut v = Vec::with_capacity(n);
     for _ in 0..n {
         v.push(Value::Int(0));
@@ -197,7 +197,7 @@ fn eval(e: &Expr, f: &mut Frame) -> Result<Value, DslError> {
 
 // ---- value helpers -------------------------------------------------------
 
-fn as_bool(v: &Value) -> Result<bool, DslError> {
+pub(crate) fn as_bool(v: &Value) -> Result<bool, DslError> {
     Ok(match v {
         Value::Bool(b) => *b,
         Value::Int(n) => *n != 0,
@@ -241,7 +241,7 @@ fn to_str(v: &Value) -> String {
     }
 }
 
-fn num_binop(op: BinOp, a: Value, b: Value) -> Result<Value, DslError> {
+pub(crate) fn num_binop(op: BinOp, a: Value, b: Value) -> Result<Value, DslError> {
     // `+` with a string operand concatenates (the value is rendered to text).
     if op == BinOp::Add && (matches!(a, Value::Str(_)) || matches!(b, Value::Str(_))) {
         let mut s = to_str(&a);
@@ -279,7 +279,7 @@ fn num_binop(op: BinOp, a: Value, b: Value) -> Result<Value, DslError> {
     }))
 }
 
-fn compare(op: CmpOp, a: Value, b: Value) -> Result<bool, DslError> {
+pub(crate) fn compare(op: CmpOp, a: Value, b: Value) -> Result<bool, DslError> {
     // Bool == Bool / Bool != Bool handled directly; everything else numerically.
     if let (Value::Bool(x), Value::Bool(y)) = (&a, &b) {
         return match op {
@@ -310,7 +310,7 @@ fn compare(op: CmpOp, a: Value, b: Value) -> Result<bool, DslError> {
     })
 }
 
-fn index(list: Value, idx: Value) -> Result<Value, DslError> {
+pub(crate) fn index(list: Value, idx: Value) -> Result<Value, DslError> {
     let items = match list {
         Value::List(l) => l,
         _ => return Err(DslError::Type("cannot index a non-list".to_string())),
@@ -334,9 +334,69 @@ fn call_builtin(b: Builtin, args: &[Expr], f: &mut Frame) -> Result<Value, DslEr
     for a in args {
         vals.push(eval(a, f)?);
     }
+    match b {
+        Builtin::Fetch => {
+            if vals.len() != 1 {
+                return Err(DslError::Arity { builtin: name, got: vals.len() });
+            }
+            let url = expect_str(&vals[0], "fetch() expects a url string")?;
+            match f.net {
+                Some(net) => Ok(Value::str(&net.fetch(&url)?)),
+                None => Err(DslError::Net("no network capability installed".to_string())),
+            }
+        }
+        Builtin::FetchJson => {
+            if vals.len() != 2 {
+                return Err(DslError::Arity { builtin: name, got: vals.len() });
+            }
+            let url = expect_str(&vals[0], "fetch_json() expects a url string")?;
+            let path = expect_str(&vals[1], "fetch_json() expects a path string")?;
+            let net = f
+                .net
+                .ok_or_else(|| DslError::Net("no network capability installed".to_string()))?;
+            let probe = json_probe(&path);
+            net.fetch_extract(&url, &probe)
+        }
+        _ => apply_builtin(b, vals, f.display),
+    }
+}
+
+/// Extract an `Arc<str>` from a `Value::Str`, else a type error with `msg`.
+pub(crate) fn expect_str(v: &Value, msg: &'static str) -> Result<Arc<str>, DslError> {
+    match v {
+        Value::Str(s) => Ok(s.clone()),
+        _ => Err(DslError::Type(msg.to_string())),
+    }
+}
+
+/// Build the streaming probe used by `fetch_json`: extract the scalar at `path`
+/// from the bytes received so far, tolerating a mid-codepoint chunk boundary.
+/// Shared by the sync and async evaluators.
+pub(crate) fn json_probe(path: &str) -> impl Fn(&[u8]) -> Option<Value> + '_ {
+    move |buf: &[u8]| -> Option<Value> {
+        let s = match core::str::from_utf8(buf) {
+            Ok(s) => s,
+            Err(e) => core::str::from_utf8(&buf[..e.valid_up_to()]).ok()?,
+        };
+        crate::json::get(s, path).ok()
+    }
+}
+
+/// Apply a builtin to its already-evaluated argument values. Handles every
+/// builtin EXCEPT `Fetch`/`FetchJson` (which need a network capability and are
+/// dispatched by the sync/async evaluators directly). Shared by both evaluators.
+pub(crate) fn apply_builtin(
+    b: Builtin,
+    vals: Vec<Value>,
+    display: Option<&dyn Display>,
+) -> Result<Value, DslError> {
+    let name = builtin_name(b);
     let arity_err = |got: usize| DslError::Arity { builtin: name, got };
 
     match b {
+        Builtin::Fetch | Builtin::FetchJson => {
+            unreachable!("fetch/fetch_json are dispatched by the evaluator, not apply_builtin")
+        }
         Builtin::Len => {
             if vals.len() != 1 {
                 return Err(arity_err(vals.len()));
@@ -488,53 +548,12 @@ fn call_builtin(b: Builtin, args: &[Expr], f: &mut Frame) -> Result<Value, DslEr
             };
             crate::json::get(&text, &path)
         }
-        Builtin::Fetch => {
-            if vals.len() != 1 {
-                return Err(arity_err(vals.len()));
-            }
-            let url = match &vals[0] {
-                Value::Str(s) => s.clone(),
-                _ => return Err(DslError::Type("fetch() expects a url string".to_string())),
-            };
-            match f.net {
-                Some(net) => Ok(Value::str(&net.fetch(&url)?)),
-                None => Err(DslError::Net("no network capability installed".to_string())),
-            }
-        }
-        Builtin::FetchJson => {
-            if vals.len() != 2 {
-                return Err(arity_err(vals.len()));
-            }
-            let url = match &vals[0] {
-                Value::Str(s) => s.clone(),
-                _ => return Err(DslError::Type("fetch_json() expects a url string".to_string())),
-            };
-            let path = match &vals[1] {
-                Value::Str(s) => s.clone(),
-                _ => return Err(DslError::Type("fetch_json() expects a path string".to_string())),
-            };
-            let net = match f.net {
-                Some(net) => net,
-                None => return Err(DslError::Net("no network capability installed".to_string())),
-            };
-            // Probe: try to extract the scalar from the bytes received so far.
-            // Trim a trailing partial UTF-8 char so a mid-codepoint chunk
-            // boundary doesn't abort the parse.
-            let probe = |buf: &[u8]| -> Option<Value> {
-                let s = match core::str::from_utf8(buf) {
-                    Ok(s) => s,
-                    Err(e) => core::str::from_utf8(&buf[..e.valid_up_to()]).ok()?,
-                };
-                crate::json::get(s, &path).ok()
-            };
-            net.fetch_extract(&url, &probe)
-        }
         Builtin::Show => {
             if vals.len() != 1 {
                 return Err(arity_err(vals.len()));
             }
             let text = to_str(&vals[0]);
-            match f.display {
+            match display {
                 Some(d) => {
                     d.show(&text)?;
                     Ok(vals.into_iter().next().unwrap()) // return the shown value
@@ -616,7 +635,7 @@ fn reduce_minmax(b: Builtin, vals: Vec<Value>, name: &'static str) -> Result<Val
     Ok(best)
 }
 
-fn builtin_name(b: Builtin) -> &'static str {
+pub(crate) fn builtin_name(b: Builtin) -> &'static str {
     match b {
         Builtin::Len => "len",
         Builtin::Abs => "abs",
