@@ -145,6 +145,7 @@ max(a, b)</code></pre>
     <tr><td><code>str(x)</code></td><td>string</td><td>string representation of a value</td></tr>
     <tr><td><code>json_get(text, "a.b.0.c")</code></td><td>scalar</td><td>extract the scalar at a dotted/indexed JSON path (no full parse — only the matched value is materialized)</td></tr>
     <tr><td><code>fetch(url)</code></td><td>string</td><td>HTTP(S) GET body. Gated by a host allowlist; errors if the host isn't allowed or no network capability is present</td></tr>
+    <tr><td><code>fetch_json(url, "a.b.0.c")</code></td><td>scalar</td><td>stream the response and extract just the scalar at the path, stopping as soon as it's found — never buffers the whole body. Preferred on the device.</td></tr>
   </table>
 </section>
 
@@ -161,8 +162,15 @@ json_get(
   "properties.timeseries.0.data.instant.details.air_temperature")
 # → 14.9</code></pre>
   <p><strong>Memory note (device):</strong> <code>json_get</code> is path-directed so it never builds the
-  whole document in RAM — it materializes only the matched value. On the ESP32 (≈50 kB free, no PSRAM)
-  this is what makes reading a field out of a large response feasible.</p>
+  whole document in RAM — it materializes only the matched value. On the ESP32 (≈60 kB free, no PSRAM)
+  reading a field out of a large response is feasible because <code>fetch_json</code> <em>streams</em> the
+  HTTP(S) body and stops the moment the field is found (freeing the TLS buffers early) — so a ~50 kB yr.no
+  response never has to fit in RAM at once.</p>
+<pre><code># On the ESP32, over Tailscale (single process; ≈60 kB free; verified live):
+fetch_json(
+  "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=59.91&amp;lon=10.75",
+  "properties.timeseries.0.data.instant.details.air_temperature")
+# → 14.9   (the dongle fetched yr.no itself)</code></pre>
 </section>
 
 <section>

@@ -21,7 +21,24 @@ use crate::ir::{BinOp, BoolOp, Builtin, CmpOp, Expr, Program, UnOp, Value};
 /// host (CLI: an HTTP client; device: esp-idf + a config allowlist) controls
 /// exactly what a program may reach. `None` installed → `fetch` errors.
 pub trait Net {
+    /// Fetch the whole response body as a string.
     fn fetch(&self, url: &str) -> Result<String, DslError>;
+
+    /// Stream `url`, calling `probe` with the bytes received so far after each
+    /// chunk, and return as soon as `probe` yields `Some` — letting an
+    /// implementation extract one field without ever buffering the whole body
+    /// (and abort the transfer early). The default implementation fetches the
+    /// full body and probes once, which is fine on the host; the device
+    /// overrides it with true streaming to fit in RAM.
+    fn fetch_extract(
+        &self,
+        url: &str,
+        probe: &dyn Fn(&[u8]) -> Option<Value>,
+    ) -> Result<Value, DslError> {
+        let body = self.fetch(url)?;
+        probe(body.as_bytes())
+            .ok_or_else(|| DslError::Net(String::from("field not found in response")))
+    }
 }
 
 struct Frame<'a> {
@@ -469,6 +486,34 @@ fn call_builtin(b: Builtin, args: &[Expr], f: &mut Frame) -> Result<Value, DslEr
                 None => Err(DslError::Net("no network capability installed".to_string())),
             }
         }
+        Builtin::FetchJson => {
+            if vals.len() != 2 {
+                return Err(arity_err(vals.len()));
+            }
+            let url = match &vals[0] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(DslError::Type("fetch_json() expects a url string".to_string())),
+            };
+            let path = match &vals[1] {
+                Value::Str(s) => s.clone(),
+                _ => return Err(DslError::Type("fetch_json() expects a path string".to_string())),
+            };
+            let net = match f.net {
+                Some(net) => net,
+                None => return Err(DslError::Net("no network capability installed".to_string())),
+            };
+            // Probe: try to extract the scalar from the bytes received so far.
+            // Trim a trailing partial UTF-8 char so a mid-codepoint chunk
+            // boundary doesn't abort the parse.
+            let probe = |buf: &[u8]| -> Option<Value> {
+                let s = match core::str::from_utf8(buf) {
+                    Ok(s) => s,
+                    Err(e) => core::str::from_utf8(&buf[..e.valid_up_to()]).ok()?,
+                };
+                crate::json::get(s, &path).ok()
+            };
+            net.fetch_extract(&url, &probe)
+        }
     }
 }
 
@@ -564,6 +609,7 @@ fn builtin_name(b: Builtin) -> &'static str {
         Builtin::Str => "str",
         Builtin::JsonGet => "json_get",
         Builtin::Fetch => "fetch",
+        Builtin::FetchJson => "fetch_json",
     }
 }
 

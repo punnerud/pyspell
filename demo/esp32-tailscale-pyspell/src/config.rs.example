@@ -78,3 +78,8 @@ pub const ADVERTISE_EXIT_NODE: bool = false;
 pub const PROXY_LISTEN_PORT: u16 = 8080;
 pub const PROXY_TARGET_IP: &str = "";
 pub const PROXY_TARGET_PORT: u16 = 80;
+
+/// PySpell (`pyspell` feature) `fetch`/`fetch_json` host allowlist. A submitted
+/// program may only reach these hosts (subdomains of a listed host are allowed).
+/// Keep it tight — this is the network capability boundary.
+pub const FETCH_ALLOW_HOSTS: &[&str] = &["api.met.no"];

@@ -44,6 +44,8 @@ mod ui;
 // a `fn` pointer to `pyspell_web::route` (installed via `new_tcp_server`).
 #[cfg(feature = "pyspell")]
 mod pyspell_web;
+#[cfg(feature = "pyspell")]
+mod net;
 
 /// Construct the in-tunnel TCP server, wiring the PySpell route handler when the
 /// `pyspell` feature is on. Used at every peer's connection setup.

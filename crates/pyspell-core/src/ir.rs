@@ -81,6 +81,10 @@ pub enum Builtin {
     /// ([`crate::eval::Net`]); the evaluator itself does no I/O. Host/device
     /// enforce any allowlist. Errors if no network capability is installed.
     Fetch,
+    /// `fetch_json(url, "a.b.0.c")` → stream the response and extract just the
+    /// scalar at the JSON path, stopping as soon as it's found. Memory-optimal:
+    /// the device never buffers the whole body. See [`crate::eval::Net::fetch_extract`].
+    FetchJson,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

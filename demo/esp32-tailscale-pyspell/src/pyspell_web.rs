@@ -65,7 +65,9 @@ fn run(method: &str, query: &str, body: &[u8]) -> String {
     let deadline = move || unsafe { esp_timer_get_time() } - start > budget_us;
 
     let env = device_env();
-    let limits = Limits { max_steps: 2_000_000, deadline: Some(&deadline) };
+    let net = crate::net::DeviceNet;
+    let limits =
+        Limits { max_steps: 2_000_000, deadline: Some(&deadline), net: Some(&net) };
     match eval::run_with(&program, &env, limits) {
         Ok(v) => show(&v),
         Err(e) => format!("error: {e}"),
@@ -93,6 +95,7 @@ fn show(v: &Value) -> String {
         Value::Int(n) => format!("{n}"),
         Value::Float(x) => format!("{x}"),
         Value::Bool(b) => format!("{b}"),
+        Value::Str(s) => s.to_string(),
         Value::List(l) => {
             let mut s = String::from("[");
             for (i, it) in l.iter().enumerate() {
