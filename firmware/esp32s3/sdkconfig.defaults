@@ -1,0 +1,17 @@
+# T-Dongle S3 has 16 MB flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Custom partition table (esp-idf-sys needs an ABSOLUTE path here). Update if the
+# project directory moves.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="/Users/punnerud/Downloads/pyspell/firmware/esp32s3/partitions.csv"
+
+# Comfortable main-task stack for the tree-walk evaluator.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16000
+
+# Route the console (stdin/stdout) to the native USB-Serial-JTAG that the
+# T-Dongle S3 exposes over USB — this is the live PySpell push channel.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Run the cores at 240 MHz.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y

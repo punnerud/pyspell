@@ -1,0 +1,27 @@
+# Host workspace: the compiler (front-ends), the portable core, and the CLI.
+#
+# The ESP32-S3 firmware in `firmware/esp32s3/` is deliberately NOT a member —
+# it builds for the `xtensa-esp32s3-espidf` target with its own toolchain and
+# `.cargo/config.toml`, so a plain host `cargo build` must never pull it in. It
+# depends on `pyspell-core` by relative path, exactly the "portable core +
+# platform adapter" split that tailscale-core/tailscale-rust uses.
+[workspace]
+resolver = "2"
+members = [
+    "crates/pyspell-core",
+    "crates/pyspell-lang",
+    "crates/pyspell-cli",
+]
+# The ESP32-S3 firmwares are their own workspaces (different target/toolchain).
+exclude = ["firmware/esp32s3", "demo/esp32-tailscale-pyspell"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["morten@punnerud.net"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

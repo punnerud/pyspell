@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PySpell — sandboxed Rust/Python expressions, live on ESP32</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--bd:#30363d;--fg:#e6edf3;--mut:#9da7b3;--acc:#58a6ff;--ok:#3fb950;--code:#1f2630}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);line-height:1.6}
+  header{padding:3rem 1rem 2rem;text-align:center;border-bottom:1px solid var(--bd);background:linear-gradient(180deg,#11161d,#0d1117)}
+  header h1{margin:.2em 0;font-size:2.6rem;letter-spacing:-1px}
+  header p{color:var(--mut);max-width:46rem;margin:.4rem auto;font-size:1.1rem}
+  .badges{margin-top:1rem}
+  .badge{display:inline-block;margin:.2rem;padding:.25rem .7rem;border:1px solid var(--bd);border-radius:999px;color:var(--mut);font-size:.85rem}
+  main{max-width:56rem;margin:0 auto;padding:1rem}
+  section{margin:2.4rem 0}
+  h2{font-size:1.5rem;border-bottom:1px solid var(--bd);padding-bottom:.3rem;margin-top:2.4rem}
+  h3{font-size:1.1rem;color:var(--acc);margin:1.4rem 0 .4rem}
+  a{color:var(--acc)}
+  code{background:var(--code);padding:.12em .4em;border-radius:5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em}
+  pre{background:var(--code);border:1px solid var(--bd);border-radius:9px;padding:1rem;overflow:auto}
+  pre code{background:none;padding:0}
+  table{width:100%;border-collapse:collapse;margin:.6rem 0;font-size:.95rem}
+  th,td{border:1px solid var(--bd);padding:.5rem .6rem;text-align:left;vertical-align:top}
+  th{background:var(--card);color:var(--mut);font-weight:600}
+  td code{white-space:nowrap}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:9px;padding:1rem}
+  .card h3{margin-top:0}
+  .note{background:#13241b;border:1px solid #1f6f3a;border-radius:9px;padding:.8rem 1rem;color:#b9f0c9}
+  footer{text-align:center;color:var(--mut);padding:2rem 1rem;border-top:1px solid var(--bd);margin-top:3rem;font-size:.9rem}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>PySpell</h1>
+  <p>A tiny, <strong>sandboxed expression language</strong> you write in <strong>Rust</strong> or
+  <strong>Python</strong> syntax, compile to a compact AST/IR, and run natively — on a host or
+  <strong>live on an ESP32</strong>. Like MicroPython, but two syntaxes and the parser never has to
+  ship to the device.</p>
+  <div class="badges">
+    <span class="badge">no_std + alloc core</span>
+    <span class="badge">Rust &amp; Python front-ends</span>
+    <span class="badge">~62 kB on ESP32</span>
+    <span class="badge">deny-by-default sandbox</span>
+  </div>
+  <p><a href="https://github.com/punnerud/pyspell">View on GitHub →</a></p>
+</header>
+
+<main>
+
+<section>
+  <h2>What it is</h2>
+  <p>A PySpell program is a single expression (Python) or some <code>let</code> bindings followed by a
+  trailing expression (Rust). It evaluates to a value — a number, a boolean, or a list. Free identifiers
+  are resolved at evaluation time against a host-supplied <em>environment</em>: CLI variables on a
+  laptop, or live device readings on a microcontroller. There are no loops, functions, imports, strings,
+  or I/O — that is the point: small, fast, and safe to accept from elsewhere.</p>
+  <div class="note">
+    <strong>Two ways to compile.</strong> On the host, full-fidelity front-ends use <code>syn</code>
+    (Rust) and <code>rustpython-parser</code> (Python). For "type code in a browser and run it on the
+    chip", a tiny hand-written parser (a few kB, <code>no_std</code>) builds the same AST on the device.
+    Either way: source → AST → evaluate.
+  </div>
+</section>
+
+<section>
+  <h2>Syntax at a glance</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Python</h3>
+<pre><code>free_heap &gt; 100000 and uptime_s &lt; 60
+250 if distance &gt; 1000 else 0
+0 &lt; temp &lt; 60          # chained
+20 not in peers
+sum([1, 2, 3])
+readings[-1]           # negative index
+max(a, b)</code></pre>
+    </div>
+    <div class="card">
+      <h3>Rust</h3>
+<pre><code>free_heap &gt; 100000 &amp;&amp; uptime_s &lt; 60
+if distance &gt; 1000 { 250 } else { 0 }
+let used = total - free; used * 100 / total
+!peers.contains(20)
+sum([1, 2, 3])
+readings[readings.len() - 1]
+max(a, b)</code></pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Language reference</h2>
+
+  <h3>Literals &amp; values</h3>
+  <table>
+    <tr><th>Kind</th><th>Examples</th><th>Notes</th></tr>
+    <tr><td>Integer</td><td><code>0</code>, <code>42</code>, <code>-7</code></td><td>64-bit signed</td></tr>
+    <tr><td>Float</td><td><code>1.5</code>, <code>3.14</code></td><td>64-bit</td></tr>
+    <tr><td>Boolean</td><td><code>true</code>/<code>True</code>, <code>false</code>/<code>False</code></td><td>both spellings accepted</td></tr>
+    <tr><td>List</td><td><code>[1, 2, 3]</code></td><td>elements are values</td></tr>
+  </table>
+
+  <h3>Operators</h3>
+  <table>
+    <tr><th>Group</th><th>Python</th><th>Rust</th><th>Notes</th></tr>
+    <tr><td>Arithmetic</td><td colspan="2"><code>+ - * / %</code></td><td>int <code>/</code> truncates; mixing a float promotes to float</td></tr>
+    <tr><td>Comparison</td><td colspan="2"><code>== != &lt; &lt;= &gt; &gt;=</code></td><td>Python allows chaining (<code>a &lt; b &lt; c</code>)</td></tr>
+    <tr><td>Boolean</td><td><code>and</code>, <code>or</code>, <code>not</code></td><td><code>&amp;&amp;</code>, <code>||</code>, <code>!</code></td><td>short-circuiting</td></tr>
+    <tr><td>Unary</td><td colspan="2"><code>-x</code>, <code>not x</code> / <code>!x</code></td><td></td></tr>
+    <tr><td>Membership</td><td><code>x in list</code>, <code>x not in list</code></td><td><code>list.contains(x)</code></td><td>numeric equality</td></tr>
+    <tr><td>Index</td><td colspan="2"><code>list[i]</code></td><td>negative indexing supported</td></tr>
+  </table>
+
+  <h3>Control flow &amp; bindings</h3>
+  <table>
+    <tr><th>Feature</th><th>Python</th><th>Rust</th></tr>
+    <tr><td>Conditional</td><td><code>a if cond else b</code></td><td><code>if cond { a } else { b }</code> (else required)</td></tr>
+    <tr><td>Local bindings</td><td><em>(single expression only)</em></td><td><code>let x = e; let y = e2; final_expr</code></td></tr>
+    <tr><td>Free variables</td><td colspan="2">any bare name not bound by <code>let</code> is read from the host environment</td></tr>
+  </table>
+
+  <h3>Built-in functions</h3>
+  <table>
+    <tr><th>Function</th><th>Result</th><th>Description</th></tr>
+    <tr><td><code>len(list)</code></td><td>int</td><td>number of elements</td></tr>
+    <tr><td><code>abs(x)</code></td><td>number</td><td>absolute value</td></tr>
+    <tr><td><code>min(list)</code> / <code>min(a, b, …)</code></td><td>number</td><td>minimum</td></tr>
+    <tr><td><code>max(list)</code> / <code>max(a, b, …)</code></td><td>number</td><td>maximum</td></tr>
+    <tr><td><code>sum(list)</code></td><td>number</td><td>sum of a numeric list</td></tr>
+    <tr><td><code>any(list)</code></td><td>bool</td><td>true if any element is truthy</td></tr>
+    <tr><td><code>all(list)</code></td><td>bool</td><td>true if all elements are truthy</td></tr>
+    <tr><td><code>round(x)</code></td><td>int</td><td>round to nearest integer</td></tr>
+    <tr><td><code>int(x)</code></td><td>int</td><td>truncate toward zero</td></tr>
+    <tr><td><code>float(x)</code></td><td>float</td><td>convert to float</td></tr>
+    <tr><td><code>bool(x)</code></td><td>bool</td><td>truthiness</td></tr>
+    <tr><td><code>index(list, x)</code></td><td>int</td><td>position of first <code>x</code>, or <code>-1</code></td></tr>
+    <tr><td><code>before(list, a, b)</code></td><td>bool</td><td>true if <code>a</code> occurs before <code>b</code></td></tr>
+    <tr><td><code>first(list)</code></td><td>value</td><td>first element, or <code>-1</code> if empty</td></tr>
+    <tr><td><code>last(list)</code></td><td>value</td><td>last element, or <code>-1</code> if empty</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>Running on the host</h2>
+<pre><code># Evaluate, binding free variables:
+cargo run -p pyspell-cli -- run examples/health.py --set free_heap=120000 --set uptime_ms=45000
+# → true
+
+# Compile to a portable IR blob:
+cargo run -p pyspell-cli -- compile examples/health.py    # → examples/health.py.psb
+
+# Push live to a device over USB-serial, or an interactive REPL:
+cargo run -p pyspell-cli -- repl --port /dev/cu.usbmodem2101 --lang python</code></pre>
+</section>
+
+<section>
+  <h2>Running on the ESP32</h2>
+  <p>The portable evaluator (<code>pyspell-core</code>, <code>no_std + alloc</code>) runs unchanged on the
+  ESP32-S3. Programs read live device variables from the environment:</p>
+  <table>
+    <tr><th>Variable</th><th>Meaning</th></tr>
+    <tr><td><code>free_heap</code></td><td>free heap, bytes</td></tr>
+    <tr><td><code>min_free_heap</code></td><td>lowest free heap seen since boot, bytes</td></tr>
+    <tr><td><code>uptime_ms</code></td><td>milliseconds since boot</td></tr>
+    <tr><td><code>uptime_s</code></td><td>seconds since boot</td></tr>
+  </table>
+
+  <h3>Demo: PySpell over Tailscale</h3>
+  <p>The <code>demo/esp32-tailscale-pyspell</code> firmware adds a web text window and a <code>/run</code>
+  API <em>inside a Tailscale tunnel</em> — open the device's Tailscale IP in a browser, type an
+  expression, set a timeout, and run it on the chip. PySpell adds only ~62 kB on top of the networking
+  firmware.</p>
+<pre><code># Web window:
+open http://100.x.y.z/
+
+# API (GET; code is URL-encoded; timeout in seconds, clamped 1–30):
+curl 'http://100.x.y.z/run?lang=py&amp;timeout=10&amp;code=free_heap%20%3E%20100000'   # → true
+curl 'http://100.x.y.z/run?lang=rs&amp;timeout=10&amp;code=uptime_ms%20%2F%201000'      # → 22</code></pre>
+</section>
+
+<section>
+  <h2>Sandbox &amp; limits</h2>
+  <ul>
+    <li><strong>Deny-by-default grammar.</strong> Only the whitelisted expression nodes and the
+      built-ins above exist — no loops, functions, recursion, attribute access, imports, strings, or I/O.</li>
+    <li><strong>Instruction budget.</strong> Every evaluation has a step limit (runaway guard).</li>
+    <li><strong>Wall-clock timeout.</strong> A caller can supply a deadline (e.g. 10 s); on the device the
+      ESP timer enforces it.</li>
+    <li><strong>Parser stays small.</strong> The on-device parser accepts only the safe subset, so the
+      device's attack surface is just a bounded decoder + evaluator.</li>
+  </ul>
+</section>
+
+</main>
+
+<footer>
+  PySpell — <a href="https://github.com/punnerud/pyspell">github.com/punnerud/pyspell</a> · MIT
+</footer>
+</body>
+</html>

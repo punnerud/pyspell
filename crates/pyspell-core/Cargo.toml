@@ -1,0 +1,25 @@
+[package]
+name = "pyspell-core"
+description = "Portable no_std+alloc IR + sandboxed evaluator for PySpell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "pyspell_core"
+path = "src/lib.rs"
+
+# The core is `no_std + alloc` so the SAME crate links into the host tools and
+# into the ESP32-S3 firmware. `std` (default) only adds `impl std::error::Error`
+# for ergonomics on the host; the firmware turns it off.
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+# Compact, no_std-friendly wire format for shipping a compiled `Program` to the
+# device. `serde` carries `Arc<[Value]>` via its `rc` feature; `alloc` lets it
+# work without std.
+serde = { version = "1", default-features = false, features = ["derive", "alloc", "rc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }

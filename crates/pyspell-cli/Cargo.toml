@@ -1,0 +1,18 @@
+[package]
+name = "pyspell-cli"
+description = "PySpell host CLI: compile Rust/Python to IR, run locally, and push live to a device"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "pyspell"
+path = "src/main.rs"
+
+[dependencies]
+pyspell-core = { path = "../pyspell-core" }
+pyspell-lang = { path = "../pyspell-lang" }
+clap = { version = "4", features = ["derive"] }
+serialport = "4"
+rustyline = "14"

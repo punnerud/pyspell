@@ -1,0 +1,39 @@
+# Standalone ESP32-S3 (T-Dongle S3) firmware: a live PySpell evaluator.
+#
+# NOT part of the host workspace — it builds for `xtensa-esp32s3-espidf` with the
+# `esp` toolchain (see rust-toolchain.toml + .cargo/config.toml). It depends on
+# `pyspell-core` with `--no-default-features` (no_std + alloc), the portable
+# evaluator. The heavy parsers (`pyspell-lang`) never come near the device.
+#
+# An empty `[workspace]` table makes this its own workspace so the host workspace
+# root (../../Cargo.toml) never tries to build it for the host target.
+[workspace]
+
+[package]
+name = "pyspell-esp32"
+version = "0.1.0"
+authors = ["morten@punnerud.net"]
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "pyspell-esp32"
+harness = false
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true
+opt-level = "z"
+
+[dependencies]
+log = "0.4"
+anyhow = "1"
+esp-idf-svc = "0.52"
+esp-idf-hal = "0.46"
+# Portable PySpell evaluator (no_std + alloc): IR, eval, wire format.
+pyspell-core = { path = "../../crates/pyspell-core", default-features = false }
+
+[build-dependencies]
+embuild = { version = "0.33", features = ["espidf"] }

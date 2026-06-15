@@ -1,0 +1,23 @@
+[package]
+name = "pyspell-lang"
+description = "Host-only front-ends (Rust & Python syntax) that compile to PySpell IR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "pyspell_lang"
+path = "src/lib.rs"
+
+# The heavy parsers live here and NEVER ship to the device. `python` adds the
+# Python-syntax front-end (rustpython-parser); the Rust front-end (`syn`) is
+# always on since it is small and pulls no extra tree.
+[features]
+default = ["python"]
+python = ["dep:rustpython-parser"]
+
+[dependencies]
+pyspell-core = { path = "../pyspell-core" }
+syn = { version = "2", features = ["full", "parsing"] }
+rustpython-parser = { version = "0.4", optional = true }
