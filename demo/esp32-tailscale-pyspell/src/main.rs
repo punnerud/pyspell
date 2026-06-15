@@ -205,14 +205,20 @@ fn main() -> Result<()> {
     }
     println!("wifi power-save mode set: {:?}", config::WIFI_POWER_SAVE);
 
-    // NOTE: a local-LAN parallel PySpell worker pool (local_server.rs) was tried here
-    // but DISABLED. Measured on hardware: even 2 fetch-capable worker threads (64 kB of
-    // permanent stacks) drop free heap enough that the demo's own tailscale data plane
-    // (netmap refresh + peer fetch + DERP, which peak near all the heap) aborts/boot-loops.
-    // The demo's "~260 kB free" is a calm-moment reading; WORST-CASE headroom is ~60 kB,
-    // so there is no room for a worker pool alongside full tailscale. Parallel PySpell
-    // belongs on the lean esp-rs stack (cooperative shared stack — many jobs, no per-thread
-    // stack cost). local_server.rs + net.rs's FETCH gate are kept as reference, unused.
+    // Local-LAN parallel PySpell pool. Now viable because streaming fetch_peers removed
+    // the big transient that used to starve the heap. THIN compute workers (no mbedTLS →
+    // small stacks): 8 × ~12 kB ≈ 96 kB, which fits once the netmap transient is gone.
+    // fetch_json is kept OFF this pool (local_server rejects it) so a thin stack never
+    // hits mbedTLS and overflows — fetches go via the in-tunnel server (esp-idf TLS is
+    // single-at-a-time anyway). So: 8 parallel COMPUTE on the demo + full tailscale.
+    #[cfg(feature = "pyspell")]
+    {
+        const N_WORKERS: usize = 8;
+        const WORKER_STACK: usize = 12 * 1024;
+        let _ = std::thread::Builder::new()
+            .stack_size(4 * 1024)
+            .spawn(|| local_server::run(N_WORKERS, WORKER_STACK));
+    }
 
     // subnet-router/exit-node: enable NAPT on the STA netif (data-path foundation;
     // the WG-netif bridge is the remaining deep work — see router.rs).

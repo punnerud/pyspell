@@ -117,10 +117,19 @@ fn handle(id: usize, mut stream: TcpStream) {
         }
     }
 
-    // Same handler as the in-tunnel server → identical PySpell behaviour.
-    let (ct, rbody) = match crate::pyspell_web::route(method, path, query, &body) {
-        Some(r) => (r.content_type, r.body),
-        None => ("text/plain; charset=utf-8", b"not found\n".to_vec()),
+    // These workers have THIN stacks (compute only). A `fetch_json` would drive
+    // mbedTLS and overflow the stack, so reject it here and point at the in-tunnel
+    // server (which has a fetch-capable stack). Compute jobs run fully parallel.
+    let (ct, rbody) = if path == "/run" && find(&body, b"fetch").is_some() {
+        (
+            "text/plain; charset=utf-8",
+            b"error: fetch_json is not available on the parallel LAN pool (thin stacks); use the in-tunnel server\n".to_vec(),
+        )
+    } else {
+        match crate::pyspell_web::route(method, path, query, &body) {
+            Some(r) => (r.content_type, r.body),
+            None => ("text/plain; charset=utf-8", b"not found\n".to_vec()),
+        }
     };
 
     let resp = format!(
