@@ -25,9 +25,11 @@ firmware back.
 ## Routes (served on port 80, inside the tunnel)
 
 - `GET /` — minimal page: textarea + language select + timeout + Run button.
-- `GET /run?lang=py|rs&timeout=<seconds>&code=<urlencoded>` — parse + evaluate,
-  returns `text/plain` (the result value, or `error: …`). `timeout` is clamped
-  to 1–30 s and enforced as a real wall-clock deadline on the device.
+- `POST /run?lang=py|rs&timeout=<seconds>` — program in the request body
+  (preferred: more room, no URL-encoding). The page uses this.
+- `GET /run?lang=py|rs&timeout=<seconds>&code=<urlencoded>` — same, code in the
+  query. Both return `text/plain` (the result value, or `error: …`). `timeout`
+  is clamped to 1–30 s and enforced as a real wall-clock deadline on the device.
 
 Live variables a program may read: `free_heap`, `min_free_heap`, `uptime_ms`,
 `uptime_s`.

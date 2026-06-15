@@ -177,9 +177,15 @@ cargo run -p pyspell-cli -- repl --port /dev/cu.usbmodem2101 --lang python</code
 <pre><code># Web window:
 open http://100.x.y.z/
 
-# API (GET; code is URL-encoded; timeout in seconds, clamped 1–30):
-curl 'http://100.x.y.z/run?lang=py&amp;timeout=10&amp;code=free_heap%20%3E%20100000'   # → true
-curl 'http://100.x.y.z/run?lang=rs&amp;timeout=10&amp;code=uptime_ms%20%2F%201000'      # → 22</code></pre>
+# POST (preferred): program in the body, lang/timeout in the query.
+# More room for code than a URL, and no percent-encoding.
+curl -X POST 'http://100.x.y.z/run?lang=py&amp;timeout=10' --data 'free_heap &gt; 100000'   # → true
+curl -X POST 'http://100.x.y.z/run?lang=rs&amp;timeout=10' --data 'uptime_ms / 1000'       # → 22
+
+# GET (also supported): code is URL-encoded in the query.
+curl 'http://100.x.y.z/run?lang=py&amp;timeout=10&amp;code=free_heap%20%3E%20100000'   # → true</code></pre>
+  <p><code>timeout</code> is in seconds, clamped to 1–30, and enforced as a real wall-clock deadline on
+  the device. The single request must fit one TCP segment (≈1.2 kB) — POST leaves more of that for code.</p>
 </section>
 
 <section>

@@ -7,7 +7,10 @@
 //!
 //! Routes:
 //! * `GET /`     → a tiny single-segment web page (text box + run button).
-//! * `GET /run?lang=py|rs&timeout=<s>&code=<urlencoded>` → eval, `text/plain` result.
+//! * `GET  /run?lang=py|rs&timeout=<s>&code=<urlencoded>` → eval, `text/plain` result.
+//! * `POST /run?lang=py|rs&timeout=<s>` with the program as the raw request body
+//!   → same result. POST avoids URL-encoding overhead and URL length limits, so
+//!   it fits more code in the single request segment.
 //! Any other path returns `None`, falling back to the built-in control panel.
 
 use esp_idf_svc::sys::esp_timer_get_time;
@@ -18,7 +21,7 @@ use tailscale_core::tcp::HttpReply;
 /// Largest accepted program (URL-decoded). Keeps a single request segment bounded.
 const MAX_CODE: usize = 1024;
 
-pub fn route(path: &str, query: &str) -> Option<HttpReply> {
+pub fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<HttpReply> {
     match path {
         "/" => Some(HttpReply {
             content_type: "text/html; charset=utf-8",
@@ -26,19 +29,24 @@ pub fn route(path: &str, query: &str) -> Option<HttpReply> {
         }),
         "/run" => Some(HttpReply {
             content_type: "text/plain; charset=utf-8",
-            body: run(query).into_bytes(),
+            body: run(method, query, body).into_bytes(),
         }),
         _ => None,
     }
 }
 
-fn run(query: &str) -> String {
+fn run(method: &str, query: &str, body: &[u8]) -> String {
     let lang = match query_get(query, "lang").as_str() {
         "rs" | "rust" => Lang::Rust,
         _ => Lang::Python,
     };
     let timeout_s = query_get(query, "timeout").parse::<i64>().unwrap_or(10).clamp(1, 30);
-    let code = url_decode(&query_get(query, "code"));
+    // POST → the raw request body is the program; GET → the URL-encoded `code` param.
+    let code = if method.eq_ignore_ascii_case("POST") {
+        String::from_utf8_lossy(body).trim().to_string()
+    } else {
+        url_decode(&query_get(query, "code"))
+    };
     if code.is_empty() {
         return "error: empty program".into();
     }
@@ -161,5 +169,5 @@ const PAGE: &str = "<!doctype html><meta charset=utf-8>\
 <p><select id=l><option value=py>Python</option><option value=rs>Rust</option></select> \
 timeout <input id=t value=10 size=2>s \
 <button onclick=r()>Run</button></p><pre id=o></pre>\
-<script>function r(){fetch('/run?lang='+l.value+'&timeout='+t.value+'&code='+encodeURIComponent(c.value))\
+<script>function r(){fetch('/run?lang='+l.value+'&timeout='+t.value,{method:'POST',body:c.value})\
 .then(x=>x.text()).then(s=>o.textContent=s).catch(e=>o.textContent=e)}</script>";

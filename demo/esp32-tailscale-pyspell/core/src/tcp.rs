@@ -33,10 +33,15 @@ pub struct HttpReply {
 
 /// An application route handler. The firmware (the ESP-specific layer) installs
 /// one via [`TcpServer::with_handler`] to serve its own paths (e.g. a PySpell
-/// web page + `/run` API). Returning `None` falls back to the built-in control
-/// panel. Keeping this a plain `fn` pointer is what lets tailscale-core stay
-/// free of any application/PySpell/ESP code — it only stores and calls it.
-pub type RouteFn = fn(path: &str, query: &str) -> Option<HttpReply>;
+/// web page + `/run` API). It receives the HTTP method, path, query string and
+/// request body (for `POST`). Returning `None` falls back to the built-in
+/// control panel. Keeping this a plain `fn` pointer is what lets tailscale-core
+/// stay free of any application/PySpell/ESP code — it only stores and calls it.
+///
+/// Note: the server reads only the first TCP segment, so the whole request
+/// (headers + body) must fit in it — true for both small `GET` URLs and small
+/// `POST` bodies.
+pub type RouteFn = fn(method: &str, path: &str, query: &str, body: &[u8]) -> Option<HttpReply>;
 
 const PROTO_TCP: u8 = 6;
 const HTTP_PORT: u16 = 80;
@@ -171,20 +176,20 @@ impl TcpServer {
     fn route_request(&mut self, req: &[u8]) -> HttpReply {
         let line = first_line(req);
         let mut parts = line.split(' ');
-        let _method = parts.next().unwrap_or("");
+        let method = parts.next().unwrap_or("");
         let target = parts.next().unwrap_or("/");
         let (path, query) = match target.split_once('?') {
             Some((p, q)) => (p, q),
             None => (target, ""),
         };
         if let Some(h) = self.handler {
-            if let Some(r) = h(path, query) {
+            if let Some(r) = h(method, path, query, http_body(req)) {
                 return r;
             }
         }
-        let (body, action) = builtin_route(path, query, &self.conn.our_ip);
+        let (page, action) = builtin_route(path, query, &self.conn.our_ip);
         self.action = action;
-        HttpReply { content_type: "text/html; charset=utf-8", body }
+        HttpReply { content_type: "text/html; charset=utf-8", body: page }
     }
 
     /// Build an inner IPv4 + TCP segment from the dongle to the client.
@@ -279,6 +284,20 @@ fn ok_page() -> Vec<u8> {
 <body style=\"background:#111;color:#eee;font-family:sans-serif;text-align:center\">\
 <p>OK</p><a href=/ style=color:#9cf>&larr; tilbake</a></body></html>"
         .to_vec()
+}
+
+/// The request body: everything after the `\r\n\r\n` header terminator. Empty
+/// if there is no body (e.g. a GET) or the terminator isn't in this segment.
+fn http_body(req: &[u8]) -> &[u8] {
+    let n = req.len();
+    let mut i = 0;
+    while i + 4 <= n {
+        if &req[i..i + 4] == b"\r\n\r\n" {
+            return &req[i + 4..];
+        }
+        i += 1;
+    }
+    &[]
 }
 
 /// First request line (up to CR/LF) as a str.
