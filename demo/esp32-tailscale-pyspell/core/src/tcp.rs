@@ -145,17 +145,25 @@ impl TcpServer {
             return out;
         }
 
-        // Data carrying the HTTP request (the GET). Respond with the page + FIN.
+        // Data carrying the HTTP request. Respond with the page, SPLIT across multiple
+        // TCP segments so a page larger than one MSS can be served (Nivå A: blast all
+        // segments within the client's window; no retransmission yet — a dropped
+        // segment means a reload). Each segment gets the running seq (snd_nxt) and only
+        // the last carries FIN. The page lives in flash; only the segment buffers are RAM.
         if !payload.is_empty() {
             self.conn.rcv_nxt = seq.wrapping_add(payload.len() as u32);
             let reply = self.route_request(payload);
             let resp = http_response(&reply.body, reply.content_type);
-            out.push(self.segment(PSH | ACK | FIN, &resp));
-            self.conn.snd_nxt = self
-                .conn
-                .snd_nxt
-                .wrapping_add(resp.len() as u32)
-                .wrapping_add(1); // FIN consumes one
+            const MSS: usize = 512; // conservative inner payload (tunnel MTU-safe)
+            let mut off = 0;
+            while off < resp.len() {
+                let end = (off + MSS).min(resp.len());
+                let flags = if end == resp.len() { PSH | ACK | FIN } else { PSH | ACK };
+                out.push(self.segment(flags, &resp[off..end]));
+                self.conn.snd_nxt = self.conn.snd_nxt.wrapping_add((end - off) as u32);
+                off = end;
+            }
+            self.conn.snd_nxt = self.conn.snd_nxt.wrapping_add(1); // FIN consumes one
             return out;
         }
 
