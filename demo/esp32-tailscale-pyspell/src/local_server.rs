@@ -19,6 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use tailscale_core::tcp::{parse_range, HttpReply};
+
 const PORT: u16 = 8080;
 const MAX_HEADER: usize = 8192;
 
@@ -141,30 +143,87 @@ fn handle(id: usize, mut stream: TcpStream, allow_fetch: bool) {
     // These workers have THIN stacks (compute only). A `fetch_json` would drive
     // mbedTLS and overflow the stack, so reject it here and point at the in-tunnel
     // server (which has a fetch-capable stack). Compute jobs run fully parallel.
-    let (ct, rbody) = if !allow_fetch && path == "/run" && find(&body, b"fetch").is_some() {
-        (
-            "text/plain; charset=utf-8",
-            b"error: fetch_json is not available on the parallel LAN pool (thin stacks); use the in-tunnel server\n".to_vec(),
-        )
+    let n = if !allow_fetch && path == "/run" && find(&body, b"fetch").is_some() {
+        let msg: &[u8] = b"error: fetch_json is not available on the parallel LAN pool (thin stacks); use the in-tunnel server\n";
+        write_full(&mut stream, 200, "text/plain; charset=utf-8", msg);
+        msg.len()
     } else {
         match crate::pyspell_web::route(method, path, query, &body) {
-            Some(r) => {
-                let ct = r.content_type;
-                (ct, r.into_body())
+            // Stream the response straight from its BodySource (real lwIP TCP does the
+            // windowing/retransmit), honouring `Range:` — so a large body (e.g. the
+            // model file) serves with O(1) RAM + partial fetch, never materialised.
+            Some(r) => stream_reply(&mut stream, r, head.as_bytes()),
+            None => {
+                write_full(&mut stream, 404, "text/plain; charset=utf-8", b"not found\n");
+                0
             }
-            None => ("text/plain; charset=utf-8", b"not found\n".to_vec()),
         }
     };
-
-    let resp = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        rbody.len()
-    );
-    println!("[srv] w{id} serve {method} {path} -> {} B", rbody.len());
-    let _ = stream.write_all(resp.as_bytes());
-    let _ = stream.write_all(&rbody);
+    println!("[srv] w{id} serve {method} {path} -> {n} B");
     let _ = stream.flush();
     println!("[srv] w{id} done {path}");
+}
+
+/// Write a complete small response (status line + headers + body) to the stream.
+fn write_full(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) {
+    let reason = if status == 404 { "404 Not Found" } else { "200 OK" };
+    let head = format!(
+        "HTTP/1.1 {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(body);
+}
+
+/// Stream an [`HttpReply`] over a real TCP stream, honouring a `Range:` request
+/// (`req_headers` = the raw request header bytes). The body is read from its
+/// `BodySource` in chunks and written incrementally — never copied whole — so the
+/// peak RAM is one chunk regardless of body size. Returns body bytes sent.
+fn stream_reply(stream: &mut TcpStream, reply: HttpReply, req_headers: &[u8]) -> usize {
+    let total = reply.source.total_len();
+    let (status, base, len) = match parse_range(req_headers, total) {
+        Ok(None) => (200u16, 0usize, total),
+        Ok(Some((a, b))) => (206u16, a, b - a + 1),
+        Err(()) => {
+            let head = format!(
+                "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\nContent-Length: 0\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccept-Ranges: bytes\r\n\r\n"
+            );
+            let _ = stream.write_all(head.as_bytes());
+            return 0;
+        }
+    };
+    let reason = if status == 206 { "206 Partial Content" } else { "200 OK" };
+    let mut head = format!(
+        "HTTP/1.1 {reason}\r\nContent-Type: {}\r\nContent-Length: {len}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccept-Ranges: bytes\r\n",
+        reply.content_type
+    );
+    if status == 206 {
+        head.push_str(&format!(
+            "Content-Range: bytes {}-{}/{}\r\n",
+            base,
+            base + len - 1,
+            total
+        ));
+    }
+    head.push_str("\r\n");
+    if stream.write_all(head.as_bytes()).is_err() {
+        return 0;
+    }
+    let end = base + len;
+    let mut off = base;
+    let mut chunk = [0u8; 2048];
+    while off < end {
+        let want = (end - off).min(chunk.len());
+        let got = reply.source.read_at(off, &mut chunk[..want]);
+        if got == 0 {
+            break;
+        }
+        if stream.write_all(&chunk[..got]).is_err() {
+            break;
+        }
+        off += got;
+    }
+    off - base
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {

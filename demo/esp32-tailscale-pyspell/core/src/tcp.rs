@@ -60,7 +60,8 @@ pub enum BodySource {
 }
 
 impl BodySource {
-    fn total_len(&self) -> usize {
+    /// Total body length in bytes.
+    pub fn total_len(&self) -> usize {
         match self {
             BodySource::Static(s) => s.len(),
             BodySource::Owned(v) => v.len(),
@@ -69,7 +70,9 @@ impl BodySource {
     }
 
     /// Read body bytes at `off` into `buf`; returns bytes written (clamped to end).
-    fn read_at(&self, off: usize, buf: &mut [u8]) -> usize {
+    /// Public so a real-TCP server (e.g. the lwIP-bridge `local_server`) can stream
+    /// the same `BodySource` chunk-by-chunk instead of materialising the whole body.
+    pub fn read_at(&self, off: usize, buf: &mut [u8]) -> usize {
         match self {
             BodySource::Static(s) => copy_clamped(s, off, buf),
             BodySource::Owned(v) => copy_clamped(v, off, buf),
@@ -466,9 +469,9 @@ impl TcpServer {
         let reply = self.route_request(req);
         let total_body = reply.source.total_len();
         let (status, body_base, content_len) = match parse_range(req, total_body) {
-            RangeResult::None => (reply.status, 0, total_body),
-            RangeResult::Sat(a, b) => (206, a, b - a + 1),
-            RangeResult::Unsat => (416, 0, 0),
+            Ok(None) => (reply.status, 0, total_body),
+            Ok(Some((a, b))) => (206, a, b - a + 1),
+            Err(()) => (416, 0, 0),
         };
         let headers = render_headers(status, reply.content_type, body_base, content_len, total_body);
         let hdr_len = headers.len();
@@ -576,19 +579,14 @@ fn render_headers(
     h.into_bytes()
 }
 
-/// Result of parsing a request's `Range:` header against a body of `total` bytes.
-enum RangeResult {
-    None,         // no Range header → full 200
-    Sat(usize, usize), // satisfiable [a, b] inclusive
-    Unsat,        // present but unsatisfiable → 416
-}
-
-/// Parse a single `Range: bytes=A-B` / `A-` / `-N` header (no multipart). Clamps to
-/// the body; an out-of-range start is `Unsat`.
-fn parse_range(req: &[u8], total: usize) -> RangeResult {
+/// Parse the first `Range: bytes=A-B` / `A-` / `-N` header in an HTTP request (no
+/// multipart). `Ok(None)` = no Range header (serve full 200); `Ok(Some((a, b)))` =
+/// satisfiable inclusive byte range; `Err(())` = present but unsatisfiable (→ 416).
+/// Shared by the toy DERP server and the lwIP-bridge `local_server`.
+pub fn parse_range(req: &[u8], total: usize) -> Result<Option<(usize, usize)>, ()> {
     let text = match core::str::from_utf8(req) {
         Ok(t) => t,
-        Err(_) => return RangeResult::None,
+        Err(_) => return Ok(None),
     };
     // Find the header line, case-insensitively, value after "bytes=".
     let mut spec: Option<&str> = None;
@@ -605,10 +603,10 @@ fn parse_range(req: &[u8], total: usize) -> RangeResult {
     }
     let spec = match spec {
         Some(s) => s,
-        None => return RangeResult::None,
+        None => return Ok(None),
     };
     if total == 0 {
-        return RangeResult::Unsat;
+        return Err(());
     }
     // Only the first range of a (possibly comma-separated) set is honoured.
     let spec = spec.split(',').next().unwrap_or("").trim();
@@ -617,39 +615,30 @@ fn parse_range(req: &[u8], total: usize) -> RangeResult {
             // "-N": last N bytes.
             let n: usize = match suffix.trim().parse() {
                 Ok(n) if n > 0 => n,
-                _ => return RangeResult::Unsat,
+                _ => return Err(()),
             };
             let n = n.min(total);
             (total - n, total - 1)
         }
         Some((start, "")) => {
             // "A-": from A to end.
-            let a: usize = match start.trim().parse() {
-                Ok(a) => a,
-                _ => return RangeResult::Unsat,
-            };
+            let a: usize = start.trim().parse().map_err(|_| ())?;
             if a >= total {
-                return RangeResult::Unsat;
+                return Err(());
             }
             (a, total - 1)
         }
         Some((start, end)) => {
-            let a: usize = match start.trim().parse() {
-                Ok(a) => a,
-                _ => return RangeResult::Unsat,
-            };
-            let b: usize = match end.trim().parse() {
-                Ok(b) => b,
-                _ => return RangeResult::Unsat,
-            };
+            let a: usize = start.trim().parse().map_err(|_| ())?;
+            let b: usize = end.trim().parse().map_err(|_| ())?;
             if a >= total || a > b {
-                return RangeResult::Unsat;
+                return Err(());
             }
             (a, b.min(total - 1))
         }
-        None => return RangeResult::Unsat,
+        None => return Err(()),
     };
-    RangeResult::Sat(a, b)
+    Ok(Some((a, b)))
 }
 
 /// Sequence-number "less than", wraparound-safe (RFC 1982 serial comparison).
