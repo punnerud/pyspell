@@ -32,6 +32,23 @@ pub const FRAME_PONG: u8 = 0x0d;
 const MAGIC: &[u8] = b"DERP\xf0\x9f\x94\x91"; // "DERP🔑"
 const MAX_FRAME: usize = 64 * 1024;
 
+/// Pinned trust anchors for the DERP relay's TLS chain. The relay
+/// (`derp1f.tailscale.com`) presents a Let's Encrypt leaf chaining up to ISRG:
+/// `leaf ← YE2 ← Root YE ← ISRG Root X2 ← ISRG Root X1`. Pinning just these two
+/// ISRG roots — instead of attaching the full Mozilla CA bundle — cuts handshake
+/// RAM + CPU on every (re)connect, which is what lets the DERP responder coexist
+/// with the lwIP bridge on ~64 kB of free heap. Both roots are embedded so a chain
+/// that anchors at X1 (current) or shortens to X2 still validates. These are public
+/// root CAs (safe to commit); refresh from https://letsencrypt.org/certs/ if the
+/// DERP CA ever changes (TLS will simply fail to connect if the pin goes stale).
+static DERP_CA_PEM: &[u8] = include_bytes!("../certs/derp-roots.pem");
+
+/// Monotonic milliseconds since boot (for the in-tunnel TCP server's retransmit
+/// timers and the peer-LRU table).
+fn now_ms() -> u64 {
+    (unsafe { sys::esp_timer_get_time() } / 1000) as u64
+}
+
 /// An established DERP connection (TLS socket after the protocol handshake).
 pub struct Derp {
     tls: *mut sys::esp_tls,
@@ -147,6 +164,57 @@ impl Derp {
         Ok((typ, payload))
     }
 
+    /// Like [`read_frame`](Self::read_frame) but reads the payload into a caller-owned
+    /// buffer that is reused across frames (its capacity is retained), so the serve
+    /// loop does not allocate a fresh `Vec` per received packet.
+    pub fn read_frame_into(&mut self, payload: &mut Vec<u8>) -> Result<u8> {
+        let mut hdr = [0u8; 5];
+        self.read_exact(&mut hdr)?;
+        let typ = hdr[0];
+        let len = u32::from_be_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
+        if len > MAX_FRAME {
+            bail!("DERP frame too large: {len}");
+        }
+        payload.clear();
+        payload.resize(len, 0);
+        if len > 0 {
+            self.read_exact(payload)?;
+        }
+        Ok(typ)
+    }
+
+    /// Read one frame into `payload`, but return `Ok(None)` if no frame arrives
+    /// within `timeout_ms` (so the serve loop can run retransmit ticks while idle).
+    /// Uses `poll()` on the raw socket; if mbedTLS already has a buffered record
+    /// (which `poll` can't see), it reads immediately instead.
+    pub fn read_frame_timeout(
+        &mut self,
+        payload: &mut Vec<u8>,
+        timeout_ms: i32,
+    ) -> Result<Option<u8>> {
+        let buffered = unsafe { sys::esp_tls_get_bytes_avail(self.tls) } > 0;
+        if !buffered {
+            let mut fd: i32 = -1;
+            let r = unsafe { sys::esp_tls_get_conn_sockfd(self.tls, &mut fd) };
+            if r == sys::ESP_OK && fd >= 0 {
+                let mut pfd = sys::pollfd {
+                    fd,
+                    events: sys::POLLIN as i16,
+                    revents: 0,
+                };
+                let pr = unsafe { sys::poll(&mut pfd as *mut _, 1 as sys::nfds_t, timeout_ms) };
+                if pr == 0 {
+                    return Ok(None); // idle: no data within the timeout
+                }
+                if pr < 0 {
+                    bail!("DERP poll error");
+                }
+            }
+            // If we couldn't get the fd, fall through to a blocking read.
+        }
+        self.read_frame_into(payload).map(Some)
+    }
+
     fn write_frame(&mut self, typ: u8, payload: &[u8]) -> Result<()> {
         let mut hdr = [0u8; 5];
         hdr[0] = typ;
@@ -232,7 +300,14 @@ fn tls_connect(host: &str, port: u16) -> Result<*mut sys::esp_tls> {
         bail!("esp_tls_init failed");
     }
     let mut cfg: sys::esp_tls_cfg_t = unsafe { core::mem::zeroed() };
-    cfg.crt_bundle_attach = Some(sys::esp_crt_bundle_attach);
+    // Pin the DERP relay CA (PEM, NUL-terminated) instead of attaching the full
+    // bundle. `esp_tls_conn_new_sync` is synchronous and parses the CA during the
+    // call, so this stack-local buffer only needs to outlive the connect below.
+    let mut ca = Vec::with_capacity(DERP_CA_PEM.len() + 1);
+    ca.extend_from_slice(DERP_CA_PEM);
+    ca.push(0); // PEM buffer must be NUL-terminated; cacert_bytes includes the NUL
+    cfg.__bindgen_anon_1.cacert_buf = ca.as_ptr();
+    cfg.__bindgen_anon_2.cacert_bytes = ca.len() as u32;
     cfg.timeout_ms = 15000;
 
     let host_c = std::ffi::CString::new(host).unwrap();
@@ -280,37 +355,62 @@ pub fn run(id: crate::node::Identity, upgrade: Option<crate::node::Upgrade>) {
 /// One peer's tunnel state, reached via the relay.
 struct DerpPeer {
     tun: crate::wg::Tunnel,
+    /// Last time we handled a packet from this peer (for LRU eviction).
+    last_ms: u64,
     #[cfg(feature = "http-server")]
     tcp: crate::tcp::TcpServer,
 }
+
+/// Few tailscale peers ever reach us over the relay; cap the table so DERP RAM is
+/// bounded no matter how many node keys probe us (LRU-evict the oldest when full).
+const MAX_PEERS: usize = 4;
+/// Bound on the "already attempted a direct upgrade" set (cleared when it grows).
+const MAX_UPGRADED: usize = 16;
+/// Idle poll cadence; also the retransmit-tick granularity for in-tunnel TCP.
+const IDLE_MS: i32 = 100;
 
 fn serve(d: &mut Derp, id: &crate::node::Identity, upgrade: Option<&crate::node::Upgrade>) {
     use std::collections::HashMap;
     let mut peers: HashMap<[u8; 32], DerpPeer> = HashMap::new();
     let mut upgraded: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    // Reused across frames so we don't allocate a fresh Vec per received packet.
+    let mut scratch: Vec<u8> = Vec::with_capacity(2048);
 
     loop {
-        let (typ, payload) = match d.read_frame() {
-            Ok(f) => f,
+        let now = now_ms();
+        let typ = match d.read_frame_timeout(&mut scratch, IDLE_MS) {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                // Idle: drive the in-tunnel TCP retransmit timers for each peer.
+                #[cfg(feature = "http-server")]
+                for (src, p) in peers.iter_mut() {
+                    let src = *src;
+                    p.tcp.tick(now, |seg| {
+                        let out = p.tun.encrypt(seg);
+                        let _ = d.send_packet(&src, &out);
+                    });
+                }
+                continue;
+            }
             Err(e) => {
                 println!("DERP read error: {e:#}");
                 return;
             }
         };
-        if typ != FRAME_RECV_PACKET || payload.len() < 32 {
-            continue; // keepalive, serverinfo, etc.
+        if typ != FRAME_RECV_PACKET || scratch.len() <= 32 {
+            continue; // keepalive, serverinfo, or empty packet
         }
         let mut src = [0u8; 32];
-        src.copy_from_slice(&payload[..32]);
-        let pkt = &payload[32..];
-        if pkt.is_empty() {
-            continue;
-        }
+        src.copy_from_slice(&scratch[..32]);
+        let pkt = &scratch[32..];
 
         // derp-upgrade: first time we hear from a peer over the relay, coordinate
         // a direct path — send it CALL_ME_MAYBE with our endpoints and ask the UDP
         // dataplane to probe its endpoints.
         if let Some(up) = upgrade {
+            if upgraded.len() > MAX_UPGRADED {
+                upgraded.clear(); // bounded; a re-attempt is harmless
+            }
             if upgraded.insert(src) {
                 try_upgrade(d, id, up, &src);
             }
@@ -354,10 +454,19 @@ fn serve(d: &mut Derp, id: &crate::node::Identity, upgrade: Option<&crate::node:
                 match crate::wg::consume_initiation(&id.node_priv, &id.node_pub, pkt, our_index) {
                     Ok((resp, tun, _peer_static)) => {
                         let _ = d.send_packet(&src, &resp);
+                        // Bound the table: evict the least-recently-used peer if full.
+                        if peers.len() >= MAX_PEERS && !peers.contains_key(&src) {
+                            if let Some(old) =
+                                peers.iter().min_by_key(|(_, p)| p.last_ms).map(|(k, _)| *k)
+                            {
+                                peers.remove(&old);
+                            }
+                        }
                         peers.insert(
                             src,
                             DerpPeer {
                                 tun,
+                                last_ms: now,
                                 #[cfg(feature = "http-server")]
                                 tcp: crate::new_tcp_server(),
                             },
@@ -369,12 +478,13 @@ fn serve(d: &mut Derp, id: &crate::node::Identity, upgrade: Option<&crate::node:
             }
             Some(x) if x == crate::wg::MSG_TRANSPORT => {
                 if let Some(p) = peers.get_mut(&src) {
+                    p.last_ms = now;
                     match p.tun.decrypt(pkt) {
                         Ok(inner)
                             if !inner.is_empty()
                                 && crate::node::src_allowed(&id.allowed_srcs, &inner) =>
                         {
-                            handle_inner(d, p, &src, &inner);
+                            handle_inner(d, p, &src, &inner, now);
                         }
                         Ok(_) => {} // keepalive / filtered
                         Err(e) => println!("DERP transport decrypt failed: {e:#}"),
@@ -413,8 +523,11 @@ fn try_upgrade(d: &mut Derp, id: &crate::node::Identity, up: &crate::node::Upgra
 }
 
 /// Handle a decrypted inner IP packet from a DERP peer: ICMP echo reply and/or
-/// the in-tunnel HTTP server, reflecting responses back through the relay.
-fn handle_inner(d: &mut Derp, p: &mut DerpPeer, src: &[u8; 32], inner: &[u8]) {
+/// the in-tunnel HTTP server, reflecting responses back through the relay. The
+/// HTTP server streams each segment straight out (encrypt + relay per segment) so
+/// peak RAM stays O(1) regardless of response size; `tick` (driven from the serve
+/// loop) handles retransmits.
+fn handle_inner(d: &mut Derp, p: &mut DerpPeer, src: &[u8; 32], inner: &[u8], now_ms: u64) {
     #[cfg(feature = "icmp")]
     if let Some(reply) = tailscale_core::icmp::echo_reply_any(inner) {
         let out = p.tun.encrypt(&reply);
@@ -424,19 +537,15 @@ fn handle_inner(d: &mut Derp, p: &mut DerpPeer, src: &[u8; 32], inner: &[u8]) {
     }
     #[cfg(feature = "http-server")]
     {
-        let replies = p.tcp.handle(inner);
-        for r in &replies {
-            let out = p.tun.encrypt(r);
+        p.tcp.handle_stream(inner, now_ms, |seg| {
+            let out = p.tun.encrypt(seg);
             let _ = d.send_packet(src, &out);
-        }
-        if !replies.is_empty() {
-            println!("DERP TCP/HTTP -> {} seg(s) to {}", replies.len(), hex8(src));
-        }
+        });
         if let Some(a) = p.tcp.take_action() {
             crate::ui::dispatch_tcp(a);
         }
     }
-    let _ = (&mut *p, &*d, src, inner); // some combos use a subset of these
+    let _ = (&mut *p, &*d, src, inner, now_ms); // some combos use a subset of these
 }
 
 fn hex8(b: &[u8]) -> String {

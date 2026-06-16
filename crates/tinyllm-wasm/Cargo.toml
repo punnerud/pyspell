@@ -1,0 +1,22 @@
+[package]
+name = "tinyllm-wasm"
+description = "Browser-WASM binding for tinyllm — run the toy LLM in the user's browser from weights streamed off the ESP32"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["morten@punnerud.net"]
+
+[lib]
+crate-type = ["cdylib"]
+
+# The SAME inference engine that runs (and is host-tested) in `tinyllm`, compiled to
+# wasm32 and exposed to JS. Weights + tokenizer are streamed from the dongle's flash
+# (over the lwIP TCP bridge) and run entirely in the browser.
+[dependencies]
+wasm-bindgen = "0.2"
+tinyllm = { path = "../tinyllm", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

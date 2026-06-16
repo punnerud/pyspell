@@ -43,6 +43,10 @@ struct State {
     pending: HashMap<[u8; 32], Pending>, // keyed by peer node pubkey (one per peer)
     tunnels: HashMap<u32, TunnelEntry>,  // keyed by our receiver index
     confirmed: HashSet<SocketAddr>,
+    // lwIP bridge: peer tailscale-IP -> our_index, learned from inbound inner-packet
+    // src IPs, so outgoing lwIP packets can be routed back to the right tunnel.
+    #[cfg(feature = "lwip-bridge")]
+    ts_routes: HashMap<std::net::Ipv4Addr, u32>,
     #[cfg(feature = "tcp-proxy")]
     proxy: crate::proxy::TcpProxy,
     #[cfg(feature = "outbound")]
@@ -292,6 +296,8 @@ pub fn run(
         pending: HashMap::new(),
         tunnels: HashMap::new(),
         confirmed: HashSet::new(),
+        #[cfg(feature = "lwip-bridge")]
+        ts_routes: HashMap::new(),
         #[cfg(feature = "tcp-proxy")]
         proxy: crate::proxy::TcpProxy::new(),
         #[cfg(feature = "outbound")]
@@ -321,8 +327,9 @@ pub fn run(
     };
 
     // Dispatch: dual-core symmetric (two recv+decrypt threads) or the single
-    // threaded loop. Both share run_periodic / handle_* below.
-    #[cfg(feature = "dualcore")]
+    // threaded loop. Both share run_periodic / handle_* below. The lwIP bridge
+    // forces the single-core loop (one deterministic place to drain lwIP's TX).
+    #[cfg(all(feature = "dualcore", not(feature = "lwip-bridge")))]
     run_dualcore(
         sock,
         id,
@@ -340,8 +347,13 @@ pub fn run(
         mdns_partner_node,
     );
 
-    #[cfg(not(feature = "dualcore"))]
+    #[cfg(any(not(feature = "dualcore"), feature = "lwip-bridge"))]
     {
+        // lwIP bridge needs a snappy loop so lwIP's TX (TCP segments/ACKs) is drained
+        // and sent with low latency; otherwise the 1s recv timeout throttles TCP.
+        #[cfg(feature = "lwip-bridge")]
+        let _ = sock.set_read_timeout(Some(Duration::from_millis(5)));
+
         let mut strikes: HashMap<SocketAddr, u8> = HashMap::new();
         let mut tick: u32 = 0;
         let mut last_probe = Instant::now()
@@ -368,6 +380,10 @@ pub fn run(
                     }
                 }
             }
+            // Drain packets lwIP wants to send (TCP responses/ACKs from the WG netif),
+            // route each by dst-IP to its tunnel, and encrypt+send.
+            #[cfg(feature = "lwip-bridge")]
+            lwip_drain_tx(&sock, &mut st);
             tick = tick.wrapping_add(1);
         }
     }
@@ -377,6 +393,43 @@ pub fn run(
 /// handshakes, disco-probe endpoints + keepalive tunnels every ~2s, and refresh the
 /// public NAT mapping every ~15s. Shared by the single-core loop and the dual-core
 /// main thread (which calls it while holding the shared lock). Scheduled on the
+/// Parse the IPv4 source address from an inner IP packet.
+#[cfg(feature = "lwip-bridge")]
+fn ipv4_src(p: &[u8]) -> Option<std::net::Ipv4Addr> {
+    if p.len() >= 20 && (p[0] >> 4) == 4 {
+        Some(std::net::Ipv4Addr::new(p[12], p[13], p[14], p[15]))
+    } else {
+        None
+    }
+}
+
+/// Parse the IPv4 destination address from an inner IP packet.
+#[cfg(feature = "lwip-bridge")]
+fn ipv4_dst(p: &[u8]) -> Option<std::net::Ipv4Addr> {
+    if p.len() >= 20 && (p[0] >> 4) == 4 {
+        Some(std::net::Ipv4Addr::new(p[16], p[17], p[18], p[19]))
+    } else {
+        None
+    }
+}
+
+/// Drain lwIP's outgoing inner IP packets (TCP responses/ACKs from the WG netif),
+/// route each by dst-IP to its tunnel, and encrypt+send over the WireGuard socket.
+#[cfg(feature = "lwip-bridge")]
+fn lwip_drain_tx(sock: &MagicSock, st: &mut State) {
+    for pkt in crate::lwip_bridge::drain_tx() {
+        let Some(dst) = ipv4_dst(&pkt) else { continue };
+        let Some(&idx) = st.ts_routes.get(&dst) else {
+            println!("lwip: drop TX {} B -> {dst} (no route)", pkt.len());
+            continue;
+        };
+        if let Some(e) = st.tunnels.get_mut(&idx) {
+            let out = e.tun.encrypt(&pkt);
+            let _ = sock.send_to(&out, e.addr);
+        }
+    }
+}
+
 /// WALL CLOCK, not loop-iteration count, so packet load doesn't starve packet work.
 #[allow(clippy::too_many_arguments)]
 fn run_periodic(
@@ -813,6 +866,18 @@ fn handle_decrypted(
     // reach the echo responder for direct-path latency measurement.
     #[cfg(not(feature = "bench"))]
     if !src_allowed(&id.allowed_srcs, inner) {
+        return;
+    }
+
+    // lwIP bridge: hand the decrypted inner packet to lwIP (real TCP stack) instead
+    // of the userspace toy server. Learn peer-IP -> our_index so replies route back.
+    // lwIP then handles ICMP + TCP for our 100.x; the loop drains TX via drain_tx().
+    #[cfg(feature = "lwip-bridge")]
+    {
+        if let Some(srcip) = ipv4_src(inner) {
+            st.ts_routes.insert(srcip, our_index);
+        }
+        crate::lwip_bridge::inject_ip(inner);
         return;
     }
 

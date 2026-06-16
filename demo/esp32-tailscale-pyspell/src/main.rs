@@ -34,6 +34,8 @@ pub use tailscale_core::outbound; // packet builders, migrated to the no_std cor
 mod mdns;
 #[cfg(feature = "subnet-router")]
 mod router;
+#[cfg(feature = "lwip-bridge")]
+mod lwip_bridge;
 #[cfg(feature = "tcp-proxy")]
 mod proxy;
 
@@ -231,6 +233,18 @@ fn main() -> Result<()> {
         use esp_idf_svc::handle::RawHandle;
         let sta = wifi.wifi().sta_netif().handle();
         let _ = router::enable_napt_on_sta(sta);
+    }
+
+    // Phase-1 lwIP bridge — Step 1a isolation loopback test, behind an NVS boot-loop
+    // safeguard so a bad attach can never brick the device into a USB-JTAG-blocking
+    // loop (it self-disables and comes back green within a couple of boots). Serial
+    // should show the WG netif up + an ARP exchange + an ICMP echo reply out the
+    // transmit callback. (Test IPs hardcoded for the prototype; integration will use
+    // the real control-plane TS_IP and feed decrypted packets.)
+    #[cfg(feature = "lwip-bridge")]
+    {
+        let ours = std::net::Ipv4Addr::new(100, 65, 240, 107);
+        lwip_bridge::bring_up_guarded(&nvs_part, ours);
     }
     let _ = std::io::stdout().flush();
 

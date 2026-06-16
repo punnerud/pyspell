@@ -22,14 +22,20 @@ use std::time::Duration;
 const PORT: u16 = 8080;
 const MAX_HEADER: usize = 8192;
 
-/// Spawn the acceptor + worker pool. Call from its own thread (it loops forever on
-/// `accept`). `worker_stack` must be large enough for a PySpell mbedTLS fetch
-/// (~32 kB proven on the dataplane thread).
+/// Spawn the acceptor + worker pool on the default LAN port (8080, fetch rejected).
 pub fn run(n_workers: usize, worker_stack: usize) {
-    let listener = match TcpListener::bind(("0.0.0.0", PORT)) {
+    run_port(PORT, n_workers, worker_stack, false)
+}
+
+/// Spawn the acceptor + worker pool on `port`. Call from its own thread (it loops
+/// forever on `accept`). `worker_stack` must be large enough for a PySpell mbedTLS
+/// fetch (~32 kB) if `allow_fetch`. Used by the lwIP bridge to serve our 100.x on
+/// :80 with full routing (the WG netif accepts here over real TCP).
+pub fn run_port(port: u16, n_workers: usize, worker_stack: usize, allow_fetch: bool) {
+    let listener = match TcpListener::bind(("0.0.0.0", port)) {
         Ok(l) => l,
         Err(e) => {
-            println!("[local] bind :{PORT} failed: {e}");
+            println!("[local] bind :{port} failed: {e}");
             return;
         }
     };
@@ -44,20 +50,22 @@ pub fn run(n_workers: usize, worker_stack: usize) {
         let rx = Arc::clone(&rx);
         let _ = thread::Builder::new()
             .stack_size(worker_stack)
-            .spawn(move || worker_loop(i, rx));
+            .spawn(move || worker_loop(i, rx, allow_fetch));
     }
-    println!("[local] PySpell pool up on :{PORT} ({n_workers} workers, {worker_stack}B stack)");
+    println!("[local] PySpell pool up on :{port} ({n_workers} workers, {worker_stack}B stack, fetch={allow_fetch})");
 
     // The job queue holds only the accepted connection (minimal) — workers do the
     // heavy parse+eval, so a burst of requests queues instead of spawning unbounded.
     for stream in listener.incoming() {
         if let Ok(s) = stream {
+            let peer = s.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+            println!("[srv:{port}] accept {peer}");
             let _ = tx.send(s);
         }
     }
 }
 
-fn worker_loop(id: usize, rx: Arc<Mutex<Receiver<TcpStream>>>) {
+fn worker_loop(id: usize, rx: Arc<Mutex<Receiver<TcpStream>>>, allow_fetch: bool) {
     loop {
         let stream = {
             let guard = match rx.lock() {
@@ -67,16 +75,17 @@ fn worker_loop(id: usize, rx: Arc<Mutex<Receiver<TcpStream>>>) {
             guard.recv()
         };
         match stream {
-            Ok(s) => handle(id, s),
+            Ok(s) => handle(id, s, allow_fetch),
             Err(_) => return, // sender dropped
         }
     }
 }
 
-fn handle(id: usize, mut stream: TcpStream) {
-    // Short read timeout: a connection stalled by a transient socket-pool peak frees
-    // its worker quickly (instead of blocking it ~15 s), so the pool recovers fast.
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(6)));
+fn handle(id: usize, mut stream: TcpStream, allow_fetch: bool) {
+    // Short read timeout: a connection stalled by a transient socket-pool peak — or a
+    // browser speculative *preconnect* that opens a socket but sends no request —
+    // frees the (single) worker quickly instead of blocking the queue behind it.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     // SO_LINGER=0: close() sends RST instead of FIN, so the socket is freed IMMEDIATELY
     // rather than sitting in TIME_WAIT (~minutes) holding an LWIP fd. Under a burst of
     // short request/response connections, TIME_WAIT fds otherwise pile up and starve
@@ -132,14 +141,17 @@ fn handle(id: usize, mut stream: TcpStream) {
     // These workers have THIN stacks (compute only). A `fetch_json` would drive
     // mbedTLS and overflow the stack, so reject it here and point at the in-tunnel
     // server (which has a fetch-capable stack). Compute jobs run fully parallel.
-    let (ct, rbody) = if path == "/run" && find(&body, b"fetch").is_some() {
+    let (ct, rbody) = if !allow_fetch && path == "/run" && find(&body, b"fetch").is_some() {
         (
             "text/plain; charset=utf-8",
             b"error: fetch_json is not available on the parallel LAN pool (thin stacks); use the in-tunnel server\n".to_vec(),
         )
     } else {
         match crate::pyspell_web::route(method, path, query, &body) {
-            Some(r) => (r.content_type, r.body),
+            Some(r) => {
+                let ct = r.content_type;
+                (ct, r.into_body())
+            }
             None => ("text/plain; charset=utf-8", b"not found\n".to_vec()),
         }
     };
@@ -148,10 +160,11 @@ fn handle(id: usize, mut stream: TcpStream) {
         "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         rbody.len()
     );
+    println!("[srv] w{id} serve {method} {path} -> {} B", rbody.len());
     let _ = stream.write_all(resp.as_bytes());
     let _ = stream.write_all(&rbody);
     let _ = stream.flush();
-    let _ = id;
+    println!("[srv] w{id} done {path}");
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
