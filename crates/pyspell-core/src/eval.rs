@@ -54,6 +54,11 @@ struct Frame<'a> {
     display: Option<&'a dyn Display>,
     locals: Vec<Value>,
     budget: u32,
+    /// Remaining heap-allocation budget in bytes (runaway-memory guard). Charged
+    /// as the program builds lists/strings/`fetch` bodies; hitting zero returns
+    /// [`DslError::MemoryLimit`] at the allocation, so the device never OOM-crashes
+    /// mid-job. `u32::MAX` = effectively unlimited.
+    mem: u32,
     /// Optional wall-clock guard: called periodically, returns `true` when the
     /// caller-supplied deadline has passed. `pyspell-core` has no clock of its
     /// own (it is `no_std`), so the host/device supplies one — e.g. the ESP32
@@ -63,10 +68,39 @@ struct Frame<'a> {
     since_check: u32,
 }
 
+impl Frame<'_> {
+    /// Deduct `bytes` from the heap budget, erroring before the limit is exceeded.
+    fn charge(&mut self, bytes: usize) -> Result<(), DslError> {
+        let b = bytes.min(u32::MAX as usize) as u32;
+        if self.mem < b {
+            return Err(DslError::MemoryLimit);
+        }
+        self.mem -= b;
+        Ok(())
+    }
+
+    /// Charge for a freshly-built heap value: a string's bytes, or a list's spine
+    /// (`len * size_of::<Value>()`). Nested elements were charged when built.
+    fn charge_value(&mut self, v: &Value) -> Result<(), DslError> {
+        let bytes = match v {
+            Value::Str(s) => s.len(),
+            Value::List(l) => l.len().saturating_mul(core::mem::size_of::<Value>()),
+            _ => 0,
+        };
+        self.charge(bytes)
+    }
+}
+
 /// How long a program may run, and what it may reach.
 pub struct Limits<'a> {
     /// Per-evaluation instruction budget (runaway guard). Independent of wall time.
     pub max_steps: u32,
+    /// Per-evaluation heap budget in bytes (runaway-memory guard). The program may
+    /// allocate at most this many bytes of lists/strings/`fetch` bodies before it
+    /// gets [`DslError::MemoryLimit`]. `u32::MAX` = unlimited. On a device this is
+    /// the per-job ("per-container") memory cap; set it from the request so a job
+    /// is rejected up front rather than crashing midway.
+    pub max_bytes: u32,
     /// Optional wall-clock deadline predicate (see [`Frame::deadline`]).
     pub deadline: Option<&'a dyn Fn() -> bool>,
     /// Optional network capability for `fetch` (see [`Net`]).
@@ -77,7 +111,13 @@ pub struct Limits<'a> {
 
 impl Default for Limits<'_> {
     fn default() -> Self {
-        Limits { max_steps: crate::ir::DEFAULT_MAX_STEPS, deadline: None, net: None, display: None }
+        Limits {
+            max_steps: crate::ir::DEFAULT_MAX_STEPS,
+            max_bytes: u32::MAX,
+            deadline: None,
+            net: None,
+            display: None,
+        }
     }
 }
 
@@ -92,7 +132,13 @@ pub fn run<E: Env>(program: &Program, env: &E) -> Result<Value, DslError> {
     run_with(
         program,
         env,
-        Limits { max_steps: program.max_steps, deadline: None, net: None, display: None },
+        Limits {
+            max_steps: program.max_steps,
+            max_bytes: u32::MAX,
+            deadline: None,
+            net: None,
+            display: None,
+        },
     )
 }
 
@@ -106,6 +152,7 @@ pub fn run_with<E: Env>(program: &Program, env: &E, limits: Limits) -> Result<Va
         display: limits.display,
         locals: vec_filled(program.n_locals as usize),
         budget: limits.max_steps,
+        mem: limits.max_bytes,
         deadline: limits.deadline,
         since_check: 0,
     };
@@ -147,7 +194,9 @@ fn eval(e: &Expr, f: &mut Frame) -> Result<Value, DslError> {
         Expr::Var(name) => f.env.get(name).ok_or_else(|| DslError::UnknownName(name.clone())),
         Expr::Bin(op, a, b) => {
             let (x, y) = (eval(a, f)?, eval(b, f)?);
-            num_binop(*op, x, y)
+            let r = num_binop(*op, x, y)?;
+            f.charge_value(&r)?; // charge new strings (`+` concatenation)
+            Ok(r)
         }
         Expr::Cmp(op, a, b) => {
             let (x, y) = (eval(a, f)?, eval(b, f)?);
@@ -184,13 +233,19 @@ fn eval(e: &Expr, f: &mut Frame) -> Result<Value, DslError> {
                 eval(e2, f)
             }
         }
-        Expr::Call(b, args) => call_builtin(*b, args, f),
+        Expr::Call(b, args) => {
+            let r = call_builtin(*b, args, f)?;
+            f.charge_value(&r)?; // charge builtin results (fetch body, str(), json_get, …)
+            Ok(r)
+        }
         Expr::List(items) => {
             let mut v = Vec::with_capacity(items.len());
             for it in items {
                 v.push(eval(it, f)?);
             }
-            Ok(Value::List(v.into()))
+            let r = Value::List(v.into());
+            f.charge_value(&r)?; // charge the list spine
+            Ok(r)
         }
     }
 }
@@ -681,6 +736,48 @@ mod tests {
             Box::new(Expr::Const(Value::Int(3))),
         ));
         assert_eq!(run(&p, &EmptyEnv).unwrap(), Value::Int(5));
+    }
+
+    fn limits_bytes(max_bytes: u32) -> Limits<'static> {
+        Limits { max_bytes, ..Limits::default() }
+    }
+
+    #[test]
+    fn memory_budget_rejects_oversized_list() {
+        // A 100-element list. Spine = 100 * size_of::<Value>() bytes.
+        let list = Expr::List((0..100).map(|i| Expr::Const(Value::Int(i))).collect());
+        let p = prog(list);
+        // Generous budget: succeeds.
+        assert!(run_with(&p, &EmptyEnv, limits_bytes(u32::MAX)).is_ok());
+        // Tiny budget (8 bytes): the list spine blows it → clean MemoryLimit, no panic.
+        assert_eq!(
+            run_with(&p, &EmptyEnv, limits_bytes(8)).unwrap_err(),
+            DslError::MemoryLimit
+        );
+    }
+
+    #[test]
+    fn memory_budget_rejects_string_concat() {
+        // "x" + "y" + ... built via repeated `+`; charge the resulting strings.
+        let cat = Expr::Bin(
+            BinOp::Add,
+            Box::new(Expr::Const(Value::str("hello "))),
+            Box::new(Expr::Const(Value::str("world"))),
+        );
+        let p = prog(cat);
+        assert_eq!(
+            run_with(&p, &EmptyEnv, limits_bytes(4)).unwrap_err(),
+            DslError::MemoryLimit
+        );
+        // Enough for the 11-byte result.
+        assert!(run_with(&p, &EmptyEnv, limits_bytes(64)).is_ok());
+    }
+
+    #[test]
+    fn memory_budget_default_is_unlimited() {
+        // run() must preserve old behavior (no memory limit) — a modest list is fine.
+        let list = Expr::List((0..50).map(|i| Expr::Const(Value::Int(i))).collect());
+        assert!(run(&prog(list), &EmptyEnv).is_ok());
     }
 
     #[test]

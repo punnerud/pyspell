@@ -11,6 +11,7 @@ members = [
     "crates/pyspell-core",
     "crates/pyspell-lang",
     "crates/pyspell-cli",
+    "crates/tinyllm",
 ]
 # The ESP32-S3 firmwares are their own workspaces (different target/toolchain).
 exclude = [
@@ -18,6 +19,9 @@ exclude = [
     "demo/esp32-tailscale-pyspell",
     "esp32-mpe-core",
     "esp32-mpe-fetch",
+    # Browser-WASM binding for tinyllm — built with wasm-pack for wasm32, so it is
+    # NOT part of the host `cargo build`/`test` (different target + wasm-bindgen).
+    "crates/tinyllm-wasm",
 ]
 
 [workspace.package]

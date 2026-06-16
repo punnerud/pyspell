@@ -1,0 +1,25 @@
+[package]
+name = "tinyllm"
+description = "Portable no_std+alloc int8 llama2.c-format inference for a toy on-device LLM"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "tinyllm"
+path = "src/lib.rs"
+
+# `no_std + alloc` so the SAME crate links into the host tests and the ESP32-S3
+# firmware (the "portable core + platform adapter" split, exactly like
+# `pyspell-core`). `std` (default) only adds host conveniences (file loading,
+# `std::error::Error`); the firmware turns it off and feeds an mmap'd `&[u8]`.
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+# Transcendental math (expf/powf/sinf/cosf/sqrtf/roundf) without std. The host
+# build could use std, but routing everything through libm keeps host and device
+# bit-identical, which matters for the correctness-vs-llama2.c gate.
+libm = "0.2"

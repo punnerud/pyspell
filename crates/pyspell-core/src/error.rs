@@ -18,6 +18,11 @@ pub enum DslError {
     Type(String),
     /// The per-evaluation instruction budget was exhausted (runaway guard).
     Budget,
+    /// The per-evaluation memory budget was exhausted: the program tried to
+    /// allocate more (lists/strings/`fetch` bodies) than `Limits::max_bytes`.
+    /// Caught at the allocation, so the device returns a clean error instead of
+    /// OOM-crashing mid-job.
+    MemoryLimit,
     /// The wall-clock deadline (caller-supplied timeout) passed mid-evaluation.
     Timeout,
     /// (De)serialization of a program over the wire failed.
@@ -40,6 +45,7 @@ impl fmt::Display for DslError {
             }
             DslError::Type(m) => write!(f, "type error: {m}"),
             DslError::Budget => write!(f, "program exceeded its evaluation step budget"),
+            DslError::MemoryLimit => write!(f, "program exceeded its memory budget"),
             DslError::Timeout => write!(f, "program exceeded its time limit"),
             DslError::Wire(m) => write!(f, "wire error: {m}"),
             DslError::Net(m) => write!(f, "network error: {m}"),

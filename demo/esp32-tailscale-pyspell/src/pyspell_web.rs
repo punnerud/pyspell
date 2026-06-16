@@ -23,21 +23,22 @@ const MAX_CODE: usize = 1024;
 
 pub fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<HttpReply> {
     match path {
-        "/" => Some(HttpReply {
-            content_type: "text/html; charset=utf-8",
-            body: PAGE.as_bytes().to_vec(),
-        }),
-        "/run" => Some(HttpReply {
-            content_type: "text/plain; charset=utf-8",
-            body: run(method, query, body).into_bytes(),
-        }),
+        // Served zero-copy from flash (`&'static`) — no per-request page copy.
+        "/" => Some(HttpReply::ok_static(
+            "text/html; charset=utf-8",
+            PAGE.as_bytes(),
+        )),
+        "/run" => Some(HttpReply::ok_owned(
+            "text/plain; charset=utf-8",
+            run(method, query, body).into_bytes(),
+        )),
         // MCP server: JSON-RPC 2.0 over HTTP (Streamable HTTP, stateless). Any MCP
         // agent can point at http://<tailscale-ip>/mcp and call run_pyspell — the
         // microcontroller itself speaks MCP.
-        "/mcp" => Some(HttpReply {
-            content_type: "application/json",
-            body: mcp_handle(body).into_bytes(),
-        }),
+        "/mcp" => Some(HttpReply::ok_owned(
+            "application/json",
+            mcp_handle(body).into_bytes(),
+        )),
         _ => None,
     }
 }
@@ -48,26 +49,44 @@ fn run(method: &str, query: &str, body: &[u8]) -> String {
         _ => Lang::Python,
     };
     let timeout_s = query_get(query, "timeout").parse::<i64>().unwrap_or(10);
+    // Per-job memory budget in bytes ("container" memory limit). A caller that
+    // knows the job needs more can request it (e.g. `?mem=65536`); the device then
+    // admits or rejects up front instead of OOM-crashing midway. Default 16 kB.
+    let max_bytes = query_get(query, "mem").parse::<i64>().unwrap_or(16384);
     // POST → the raw request body is the program; GET → the URL-encoded `code` param.
     let code = if method.eq_ignore_ascii_case("POST") {
         String::from_utf8_lossy(body).trim().to_string()
     } else {
         url_decode(&query_get(query, "code"))
     };
-    eval_program(&code, lang, timeout_s)
+    eval_program(&code, lang, timeout_s, max_bytes)
 }
 
 /// Parse + evaluate a PySpell program with the device's env/net/display and a
 /// wall-clock deadline; returns the value (or `error: ...`) as a string. Shared by
 /// the `/run` POST API and the MCP `run_pyspell` tool — and the single choke point
 /// that records each job for the display counters.
-fn eval_program(code: &str, lang: Lang, timeout_s: i64) -> String {
+fn eval_program(code: &str, lang: Lang, timeout_s: i64, max_bytes_req: i64) -> String {
     if code.is_empty() {
         return "error: empty program".into();
     }
     if code.len() > MAX_CODE {
         return "error: program too long".into();
     }
+
+    // Per-job ("container") memory budget, clamped to a sane range (1 kB .. 256 kB).
+    let max_bytes = max_bytes_req.clamp(1024, 262_144) as u32;
+    // Admission UP FRONT: only start if free heap covers the budget plus working
+    // overhead (parse IR, env, a possible TLS fetch). Reject cleanly here rather
+    // than letting the job OOM-crash the device midway.
+    const MEM_MARGIN: u32 = 40 * 1024;
+    let free = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
+    if free < max_bytes.saturating_add(MEM_MARGIN) {
+        return format!(
+            "error: insufficient memory: job budget {max_bytes} B + ~{MEM_MARGIN} B overhead > {free} B free (lower mem= or retry)"
+        );
+    }
+
     let program = match parse(code, lang) {
         Ok(p) => p,
         Err(e) => return format!("error: {e}"),
@@ -83,6 +102,7 @@ fn eval_program(code: &str, lang: Lang, timeout_s: i64) -> String {
     let disp = crate::display::DeviceDisplay;
     let limits = Limits {
         max_steps: 2_000_000,
+        max_bytes,
         deadline: Some(&deadline),
         net: Some(&net),
         display: Some(&disp),
@@ -136,7 +156,8 @@ fn mcp_handle(body: &[u8]) -> String {
                         "properties": {
                             "code": { "type": "string", "description": "PySpell program: let-bindings + one expression, e.g. free_heap > 100000" },
                             "lang": { "type": "string", "enum": ["py", "rs"], "description": "Syntax, default py" },
-                            "timeout": { "type": "integer", "description": "Wall-clock seconds 1-60, default 10" }
+                            "timeout": { "type": "integer", "description": "Wall-clock seconds 1-60, default 10" },
+                            "mem": { "type": "integer", "description": "Per-job memory budget in bytes (1024-262144, default 16384). Rejected up front if the device lacks free heap." }
                         },
                         "required": ["code"]
                     }
@@ -165,7 +186,11 @@ fn mcp_handle(body: &[u8]) -> String {
                 .and_then(|a| a.get("timeout"))
                 .and_then(|v| v.as_i64())
                 .unwrap_or(10);
-            let result = eval_program(code, lang, timeout);
+            let mem = args
+                .and_then(|a| a.get("mem"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(16384);
+            let result = eval_program(code, lang, timeout, mem);
             jsonrpc_ok(
                 &id,
                 serde_json::json!({

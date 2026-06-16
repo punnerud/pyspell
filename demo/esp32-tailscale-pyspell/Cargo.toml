@@ -60,6 +60,10 @@ mdns-forward = ["direct"]            # reflect mDNS/Bonjour across LANs over the
 # subnet-router/exit-node: route advertisement (always available via config) + the
 # NAPT data path. NOT in default — it's a build variant that changes lwIP routing.
 subnet-router = ["direct"]
+# Phase-1 lwIP bridge: present the WG tunnel as a real lwIP netif so a std
+# TcpListener serves our 100.x with real TCP (retransmit/parallel conns),
+# replacing the single-connection toy tcp.rs. Isolation prototype for now.
+lwip-bridge = ["ts"]
 # Per-service TCP proxy: in-tunnel TCP -> a fixed LAN host:port. Opt-in; reaches
 # one service on the other network without the full subnet-router/lwIP bridge.
 tcp-proxy = ["direct"]

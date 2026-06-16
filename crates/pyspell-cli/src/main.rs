@@ -114,6 +114,7 @@ fn real_main() -> Result<(), String> {
             let disp = StdoutDisplay;
             let limits = Limits {
                 max_steps: program.max_steps,
+                max_bytes: u32::MAX,
                 deadline: None,
                 net: Some(&net),
                 display: Some(&disp),
