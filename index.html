@@ -47,6 +47,7 @@
     <span class="badge">~62 kB on ESP32</span>
     <span class="badge">deny-by-default sandbox</span>
     <span class="badge">live over Tailscale</span>
+    <span class="badge">512 kB SRAM · no PSRAM</span>
   </div>
   <p><a href="https://github.com/punnerud/pyspell">View on GitHub →</a></p>
 </header>
@@ -240,6 +241,50 @@ curl 'http://100.x.y.z/run?lang=py&amp;timeout=10&amp;code=free_heap%20%3E%20100
     <tr><td>Success</td><td>the raw value — <code>true</code>/<code>false</code>, an integer, a float, or a list like <code>[1, 2, 3]</code></td></tr>
     <tr><td>Failure</td><td>a line starting with <code>error:</code> — e.g. <code>error: parse error: unexpected end of input</code>, <code>error: unknown name `foo`</code>, or <code>error: program exceeded its time limit</code></td></tr>
   </table>
+</section>
+
+<section>
+  <h2>How it fits in 512 kB</h2>
+  <p>The ESP32-S3 has <strong>512 kB of SRAM and no PSRAM</strong>, yet it runs a full Tailscale node
+  (control plane <em>and</em> DERP), the PySpell evaluator, a browser agent IDE served off the chip, a
+  native MCP server, and TLS to api.met.no. That only fits because of a long chain of memory tricks.</p>
+  <div class="note">
+    <strong>Honest headline.</strong> The "~260 kB free" you see between requests is a calm-moment reading.
+    The number that matters is the <strong>worst-case peak free heap: ≈60 kB</strong>, measured during a TLS
+    fetch with the Tailscale control session live. Every trick below keeps transient spikes under that
+    ceiling — and the blunt consequence is that an 8-way parallel pool and full Tailscale
+    <em>don't</em> coexist on the esp-idf stack; cheap parallelism waits for the lean pure-Rust stack.
+  </div>
+  <div class="grid">
+    <div class="card">
+      <h3>Crypto &amp; TLS</h3>
+      <p><strong>SPKI leaf-key pinning</strong> instead of CA-chain validation — one RSA-PSS verify, no 6 kB
+      chain buffer (a TLS fetch drops ~45→30 kB). A <strong>heap admission gate</strong> bounds concurrency
+      so peak heap is <code>K × per-fetch</code>, never <code>N × per-fetch</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Stream, don't buffer</h3>
+      <p>The netmap is read with <code>serde_json::from_reader</code> over the HTTP/2 frames, so serde
+      <strong>skips the huge DERPMap field</strong> instead of buffering it (~60 kB → one 4 kB chunk).
+      <code>fetch_json</code> stops the moment the value is found, and raw <strong>byte-scans</strong>
+      replace JSON DOM trees.</p>
+    </div>
+    <div class="card">
+      <h3>Pages from flash</h3>
+      <p>Static content lives in flash as <code>&amp;'static str</code> (zero heap) and is streamed out as
+      <strong>512-byte TCP segments</strong> — only the current segment is ever in RAM, so the 4.3 kB agent
+      IDE serves without a full-page buffer.</p>
+    </div>
+    <div class="card">
+      <h3>Allocator &amp; sockets</h3>
+      <p>Heap and stack share one DRAM pool (<strong>+16 kB heap = −16 kB stack</strong>), tuned by hand.
+      <code>SO_LINGER=0</code> frees lwIP sockets immediately (no TIME_WAIT pile-up), and a
+      <strong>cooperative shared stack</strong> on the lean build makes parallelism cheap where per-thread
+      stacks can't.</p>
+    </div>
+  </div>
+  <p>The full catalog — every trick with the exact file and symbol — is in
+  <a href="https://github.com/punnerud/pyspell/blob/main/docs/memory-512kb.md"><code>docs/memory-512kb.md</code></a>.</p>
 </section>
 
 <section>

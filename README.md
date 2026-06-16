@@ -136,6 +136,12 @@ Verified live over Tailscale (device `tdongle-s3`): `GET /` serves the page;
   (1585.2 kB vs 1523.3 kB) — measured by building with/without the `pyspell`
   feature. (The "what tailscale already has" is excluded from this count.)
 
+> Tailscale **and** PySpell **and** a browser agent IDE on a chip with **512 kB
+> SRAM and no PSRAM** only fit because of a long chain of memory tricks (SPKI
+> pinning, streaming the netmap, serving pages from flash, admission control, …).
+> They're all collected in **[docs/memory-512kb.md](docs/memory-512kb.md) — every
+> memory trick**.
+
 ## Status
 
 - Phase 1 — core + front-ends + CLI: **done**, `cargo test` green.
