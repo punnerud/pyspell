@@ -106,7 +106,9 @@ def gen_example(fam=None):
     elif fam == 3:
         a, b = _int(1, 5), _int(6, 12)
         en = random.choice([f"print numbers from {a} to {b}", f"count from {a} to {b}", f"list numbers {a} through {b}"])
-        py = f"for i in range({a}, {b + 1}):\n    print(i)"
+        # Symbolic upper bound ({b} + 1, not the precomputed {b+1}) so delexicalization
+        # can copy {b} into the slot — the result is identical (range stops before it).
+        py = f"for i in range({a}, {b} + 1):\n    print(i)"
     elif fam == 4:
         nm = random.choice(["add", "total", "plus", "combine"])
         en = random.choice([f"define a function {nm} that returns a plus b", f"write a function {nm} that adds two numbers a and b"])
@@ -160,7 +162,9 @@ def gen_example(fam=None):
     elif fam == 15:  # percent
         a, p = _int(5, 95), random.choice([10, 15, 20, 25, 50])
         en = random.choice([f"what is {p}% of {a}", f"{p} percent of {a}"])
-        py = f"print({p / 100} * {a})"
+        # Symbolic ({p} / 100 * {a}, not the precomputed 0.2 * {a}) so both operands are
+        # pure copies the slot machinery can carry — same value, delex-friendly.
+        py = f"print({p} / 100 * {a})"
     elif fam == 16:  # average of two
         a, b = _int(), _int()
         en = random.choice([f"average of {a} and {b}", f"the mean of {a} and {b}"])

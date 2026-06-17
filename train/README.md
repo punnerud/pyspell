@@ -14,6 +14,33 @@ meaningful, so a sub-500 kB model learns the **strict instruction grammar** well
 better than byte-level. The vocab doubles as an **input validator**: words/characters
 outside it are out-of-distribution (see `validate.py`).
 
+## Delexicalization — the model points, the browser copies (now model-driven)
+A 0.45 M model can't reliably *reproduce* a literal (a long number like `96215`, an
+arbitrary string), so it never has to. `delex.py` rewrites copied literals in the data
+into **slot markers** — numbers → `#0..#7`, quoted strings → `&a..&d` — assigned in order
+of first appearance and deduped by value. The model trains on the **template**
+(`the largest of #0 and #1` → `print(max(#0, #1))`) and only learns *"carry slot k
+forward"*; at inference the browser/device delexicalizes the prompt, runs the model, and
+**relexes** the markers back to the real literals (`web/delex.js`, mirrored in `index.html`
+and the dongle's `pyspell_web.rs`). `curate.py --delex` (on by default) applies it to the
+generate rows; EDIT/EXPLAIN rows keep their own anchor-copy mechanism.
+
+Two template families precomputed a constant from an operand (`range(a, b+1)`,
+`20% → 0.2 * a`); `gen_data.py` now emits them **symbolically** (`range(a, b + 1)`,
+`p / 100 * a`) so every operand is a pure copy. The marker tokens are forced into the
+vocab (`train.py` `PLACEHOLDERS`, both bare and space-prefixed) so each is a single atomic
+token, and typed `NUM`/`STR` for the frozen embedding (`build_types.py`).
+
+**Train/inference must delexicalize identically** — `parity_delex.py` generates thousands
+of examples and asserts `delex.py` (Python) and `web/delex.js` (the browser) produce the
+same prompt, slots, and relexed code:
+```bash
+python parity_delex.py     # needs `node` on PATH; prints "PARITY OK"
+python delex.py            # round-trip self-test
+```
+`index.html` auto-detects a delex model (the tokenizer carries `#0`/`&a`) and switches the
+slot machinery on; the old literal model still runs literally — no flag to flip.
+
 ## Honest expectations
 Trained ~1 h from scratch on an M3, this is genuinely useful **for the instruction
 patterns it's trained on** (arithmetic, print, variables, ranges/loops, small functions,

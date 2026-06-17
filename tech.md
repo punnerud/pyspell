@@ -97,8 +97,22 @@ Anything quoted is treated as **literal content**: it's copied byte-for-byte and
 **excluded from vocabulary validation** (a name like `sunflower` inside quotes is data,
 not an instruction). The tiny model is reserved for the genuinely semantic cases —
 "which builtin, which structure" — where a wrong token is recoverable. (See
-`genFastPath` / `genDeviceFastPath` / `parseInstruction` in
-`demo/esp32-tailscale-pyspell/src/pyspell_web.rs`.)
+`genFastPath` / `genDeviceFastPath` / `genMinMaxFastPath` in
+`demo/esp32-tailscale-pyspell/src/pyspell_web.rs` and `index.html`.)
+
+**The same idea, now inside the model — delexicalization.** The hand-written fast-paths
+cover the common intents, but for everything else the model used to fall back to copying
+(and mangling) long literals. So the model no longer sees literals at all: before
+training, copied numbers/strings are swapped for **slot markers** (`#0..#7`, `&a..&d`) in
+*both* the English and the Python, so it learns the **template** —
+`the largest of #0 and #1` → `print(max(#0, #1))` — and only has to route *"slot k goes
+here"*. At inference the browser delexicalizes the prompt, runs the model, and copies the
+real literals back into the slots (`relex`). No copy attention, no architecture change,
+and the freed vocab budget buys more real words. The contract is shared by training
+(`train/delex.py`) and the browser/device (`web/delex.js`) and pinned equal by
+`train/parity_delex.py`; `index.html` auto-enables it when the tokenizer carries the
+markers, so a delex model and the old literal model both just work. This is the general,
+model-driven version of "the model points, the browser copies".
 
 ### Trick 4 — the device never runs the model; the browser does
 

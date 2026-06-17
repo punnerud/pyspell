@@ -22,9 +22,24 @@ import torch
 
 import bpe as bpemod
 import curate
+import delex
 import gen_data
 from model import Config, Llama
 from sample import generate, generate_scored
+
+# Delexicalized models (the default pipeline) are prompted with slot markers and emit
+# them; the real inference path delexes the prompt and relexes the output. Eval mirrors
+# it so accuracy reflects end-to-end behaviour (toggle with --no-delex for a legacy model).
+DELEX = True
+
+
+def gen_delex(model, tk, device, en, **kw):
+    """Generate the way the browser/device does: delex the prompt, relex the output."""
+    if not DELEX:
+        return generate(model, tk, device, en, **kw)
+    prompt, nums, strs = delex.delex_en(en)
+    raw = generate(model, tk, device, prompt, **kw)
+    return delex.relex(raw, nums, strs)
 
 
 def norm(s):
@@ -179,14 +194,15 @@ def eval_harvest(model, tk, device, n, seed, out_dir, conf_thr=0.5):
     for _ in range(n):
         fam = random.randint(0, gen_data.N_FAM)
         en, py = gen_data.gen_example(fam)
-        text, pieces, confs = generate_scored(model, tk, device, en, max_new=64)
+        prompt, nums, strs = (delex.delex_en(en) if DELEX else (en, [], []))
+        text, pieces, confs = generate_scored(model, tk, device, prompt, max_new=64)
         in_str, in_brk, nl = False, 0, []
         for pc, cf in zip(pieces, confs):
             lit, in_str, in_brk = _scan_literal(pc, in_str, in_brk)
             if not lit:
                 nl.append(cf)
         cmin = min(nl) if nl else 1.0
-        ok = mask(norm(text)) == mask(norm(py))
+        ok = mask(norm(delex.relex(text, nums, strs) if DELEX else text)) == mask(norm(py))
         fam_conf.setdefault(fam, []).append(cmin)
         f = fam_fail.setdefault(fam, [0, 0])
         f[1] += 1
@@ -228,7 +244,11 @@ def main():
     ap.add_argument("--seed", type=int, default=4242, help="!= train seed -> unseen values")
     ap.add_argument("--show", type=int, default=12, help="sample failures to print")
     ap.add_argument("--dump", action="store_true", help="write failures to data/hard.jsonl")
+    ap.add_argument("--no-delex", dest="delex", action="store_false", default=True,
+                    help="evaluate a legacy (non-delexicalized) model literally")
     args = ap.parse_args()
+    global DELEX
+    DELEX = args.delex
 
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     bestp = os.path.join(args.out, "best.pt")
@@ -266,7 +286,7 @@ def main():
     by_struct = {}   # masked-py -> [correct, total]
     fails = []
     for en, py in tests:
-        out = norm(generate(model, tk, device, en, max_new=64, temperature=0.0))
+        out = norm(gen_delex(model, tk, device, en, max_new=64, temperature=0.0))
         gold = norm(py)
         e = out == gold
         s = mask(out) == mask(gold)

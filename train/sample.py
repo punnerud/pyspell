@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 
 import bpe as bpemod
+import delex
 from model import Config, Llama
 
 
@@ -63,6 +64,8 @@ def main():
     ap.add_argument("--prompt", default="add 3 and 5")
     ap.add_argument("--temperature", type=float, default=0.8)
     ap.add_argument("--max-new", type=int, default=96)
+    ap.add_argument("--no-delex", dest="delex", action="store_false", default=True,
+                    help="feed the prompt literally (legacy non-delexicalized model)")
     args = ap.parse_args()
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     ck = torch.load(os.path.join(args.out, "ckpt.pt"), map_location=device, weights_only=False)
@@ -70,8 +73,12 @@ def main():
     model.load_state_dict(ck["model"])
     model.eval()
     tk = bpemod.BPE.load_json(os.path.join(args.out, "bpe.json"))
-    print(f"[step {ck['step']}] prompt: {args.prompt!r}\n---")
-    print(generate(model, tk, device, args.prompt, args.max_new, args.temperature))
+    # Mirror the browser/device: delex the prompt, generate, relex the output.
+    prompt, nums, strs = (delex.delex_en(args.prompt) if args.delex else (args.prompt, [], []))
+    raw = generate(model, tk, device, prompt, args.max_new, args.temperature)
+    out = delex.relex(raw, nums, strs) if args.delex else raw
+    print(f"[step {ck['step']}] prompt: {args.prompt!r}  (delex: {prompt!r})\n---")
+    print(out)
 
 
 if __name__ == "__main__":

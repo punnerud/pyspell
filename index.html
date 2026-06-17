@@ -456,6 +456,7 @@ curl 'http://100.x.y.z/run?lang=py&amp;timeout=10&amp;code=free_heap%20%3E%20100
 <script type="module">
 import init, { Generator } from './web/tinyllm_wasm.js'
 import initPy, { run_spell } from './web/pyspell_wasm.js'
+import { delexEn, relex } from './web/delex.js'
 const $ = id => document.getElementById(id)
 const he = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
 const ccol = c => c>0.8?'#7ee787':c>0.5?'#e3b341':'#f85149'   // confidence -> green/amber/red
@@ -500,7 +501,7 @@ if(/\b(led|light|lamp)\b/i.test(t)&&/\bon\b/i.test(t))return 'led(1)'
 if(/\b(led|light|lamp)\b/i.test(t)&&/\boff\b/i.test(t))return 'led(0)'
 return null}
 
-let ready=false, model, tok, VOCAB=null
+let ready=false, model, tok, VOCAB=null, DELEX_OK=false
 async function fetchBytes(u){const r=await fetch(u);if(!r.ok)throw new Error(u+' '+r.status);return new Uint8Array(await r.arrayBuffer())}
 
 // --- input validation against the model's OWN vocabulary ---
@@ -520,6 +521,21 @@ function parseVocab(bytes){
     if(/^[a-z]{2,}$/.test(w))words.add(w)
   }
   return words
+}
+// Does this tokenizer carry the delexicalization slot markers? If so the model was
+// trained delexicalized → feed it slots and relex the output; if not (old literal model),
+// stay literal. Lets index.html serve either model with no flag-flipping.
+function tokenizerHasDelex(bytes){
+  const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),dec=new TextDecoder()
+  let off=4,hasNum=false,hasStr=false
+  while(off+8<=dv.byteLength){
+    off+=4
+    const len=dv.getInt32(off,true);off+=4
+    if(len<0||off+len>dv.byteLength)break
+    const t=dec.decode(bytes.subarray(off,off+len)).trim();off+=len
+    if(t==='#0')hasNum=true; else if(t==='&a')hasStr=true
+  }
+  return hasNum&&hasStr
 }
 function validate(text){
   if(!VOCAB)return[]
@@ -559,8 +575,16 @@ async function runPrompt(text){
         '(<i>add, show, reverse, largest, count, led, flash…</i>).'
       return
     }
-    const g=new Generator(model,tok,text,48,0,0.9,1);let p;code='';codeHtml=''
-    while((p=g.step())!==undefined){const c=g.confidence;code+=p;if(p)codeHtml+='<span style="color:'+ccol(c)+'" title="'+Math.round(c*100)+'% sure">'+he(p)+'</span>'}
+    // Delexicalization: a delex-capable model is fed slot markers (#0/&a) and emits them;
+    // we copy the real literals back at the end (relex). DELEX_OK is auto-detected from the
+    // tokenizer, so this stays a no-op with the old literal model — see boot().
+    let nums=[],strs=[],prompt=text
+    if(DELEX_OK){const d=delexEn(text);prompt=d.prompt;nums=d.nums;strs=d.strs}
+    const g=new Generator(model,tok,prompt,48,0,0.9,1);let p;let raw='';codeHtml=''
+    while((p=g.step())!==undefined){const c=g.confidence;raw+=p
+      if(p){const disp=DELEX_OK?relex(p,nums,strs):p
+        codeHtml+='<span style="color:'+ccol(c)+'" title="'+Math.round(c*100)+'% sure">'+he(disp)+'</span>'}}
+    code=DELEX_OK?relex(raw,nums,strs):raw   // robust full relex for the run
   }
   let h='<span class=lbl>python (the model wrote this)</span><br><code>'+(codeHtml||'(no output)')+'</code>'
   try{const r=JSON.parse(run_spell(code,'py'))
@@ -616,7 +640,7 @@ async function boot(){
   try{
     await Promise.all([init(),initPy()])
     ;[model,tok]=await Promise.all([fetchBytes('./web/model.bin'),fetchBytes('./web/tokenizer.bin')])
-    try{VOCAB=parseVocab(tok)}catch(e){VOCAB=null}   // the dictionary = the model's own vocab
+    try{VOCAB=parseVocab(tok);DELEX_OK=tokenizerHasDelex(tok)}catch(e){VOCAB=null;DELEX_OK=false}   // dictionary = model's vocab; detect delex model
     ready=true
     const pin=$('pin');pin.disabled=false;pin.placeholder='Ask in English… e.g. "what is 7 plus 5"'
     pin.onkeydown=e=>{if(e.key==='Enter')runPrompt(pin.value)}

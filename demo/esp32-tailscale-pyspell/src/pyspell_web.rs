@@ -647,14 +647,26 @@ const wasm=await prog('/tinyllm_wasm_bg.wasm','wasm',set)
 set('⏳ instantiating wasm…');await mod.default({module_or_path:wasm})
 const model=await prog('/model','model (once)',set)
 const tok=await prog('/tokenizer','tokenizer',set)
-return _ml={mod,model,tok}}
-async function local(prompt){const i=chat.push({role:'assistant',content:''})-1;render()
+return _ml={mod,model,tok,delex:tokHasDelex(tok)}}
+// Delexicalization (must match web/delex.js + index.html): copied literals -> slot
+// markers (#0/&a) before the model, real literals copied back after. Auto-on when the
+// flashed tokenizer carries the markers (a delex-trained model), else literal.
+const NUM_PH=Array.from({length:8},(_,i)=>'#'+i),STR_PH=Array.from({length:4},(_,i)=>'&'+String.fromCharCode(97+i))
+function delexEn(en){const nums=[],strs=[]
+let s=en.replace(/(['"])(.*?)\1/g,(m,q,c)=>{let i=strs.indexOf(c);if(i<0){if(strs.length>=4)return m;strs.push(c);i=strs.length-1}return q+STR_PH[i]+q})
+s=s.replace(/-?\d+(?:\.\d+)?/g,(m)=>{let i=nums.indexOf(m);if(i<0){if(nums.length>=8)return m;nums.push(m);i=nums.length-1}return NUM_PH[i]})
+return {prompt:s,nums,strs}}
+function relex(code,nums,strs){return code.replace(/#[0-7]|&[a-d]/g,(p)=>{if(p[0]==='#'){const i=+p[1];return i<nums.length?nums[i]:p}const i=p.charCodeAt(1)-97;return i<strs.length?strs[i]:p})}
+function tokHasDelex(bytes){const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),dec=new TextDecoder();let off=4,a=false,b=false;while(off+8<=dv.byteLength){off+=4;const len=dv.getInt32(off,true);off+=4;if(len<0||off+len>dv.byteLength)break;const t=dec.decode(bytes.subarray(off,off+len)).trim();off+=len;if(t==='#0')a=true;else if(t==='&a')b=true}return a&&b}
+async function local(promptIn){const i=chat.push({role:'assistant',content:''})-1;render()
 const set=t=>{chat[i].content=t;render()}
 let m;try{m=await ensureLocal(set)}catch(e){set('load failed: '+e+' (flash a model image, or set an OpenAI key)');return}
 set('')
+let pnums=[],pstrs=[],prompt=promptIn
+if(m.delex){const d=delexEn(promptIn);prompt=d.prompt;pnums=d.nums;pstrs=d.strs}
 try{const g=new m.mod.Generator(m.model,m.tok,prompt,64,0.9,0.9,Math.floor(Math.random()*1e9))
 let p,n=0,html=''
-while((p=g.step())!==undefined){const c=g.confidence;chat[i].content+=p;if(p)html+='<span style="color:'+ccol(c)+'" title="'+Math.round(c*100)+'% sure">'+he(p)+'</span>';chat[i].html=html;if(++n%2==0){render();await new Promise(r=>requestAnimationFrame(r))}}
+while((p=g.step())!==undefined){const c=g.confidence;const disp=m.delex?relex(p,pnums,pstrs):p;chat[i].content+=disp;if(p)html+='<span style="color:'+ccol(c)+'" title="'+Math.round(c*100)+'% sure">'+he(disp)+'</span>';chat[i].html=html;if(++n%2==0){render();await new Promise(r=>requestAnimationFrame(r))}}
 chat[i].content=(chat[i].content||'(no output)')+'  ⟨local toy model, offline⟩'
 chat[i].html=(html||'(no output)')+' <span style=opacity:.55>⟨coloured by confidence⟩</span>';render();save()
 await evalInto(i,chat[i].content)}catch(e){chat[i].content='local gen error: '+e;chat[i].html=null;render()}}

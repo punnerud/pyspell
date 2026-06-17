@@ -15,6 +15,7 @@ import os
 import random
 import re
 
+import delex
 import gen_data
 
 EDIT_RE = re.compile(r"^@@ (.*?) ==> (.*)$")
@@ -198,6 +199,9 @@ def main():
     ap.add_argument("--qwen", default=None)
     ap.add_argument("--out", default="data")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--delex", dest="delex", action="store_true", default=True,
+                    help="delexicalize copied literals into slot markers (default on)")
+    ap.add_argument("--no-delex", dest="delex", action="store_false")
     args = ap.parse_args()
     random.seed(args.seed)
     os.makedirs(args.out, exist_ok=True)
@@ -250,6 +254,14 @@ def main():
                 out.append(("EXPLAIN " + code, en_t))
                 added += 1
         print(f"reverse (EXPLAIN) rows: {added}")
+    # Delexicalize the GENERATE rows last (after validation — markers like #0 don't
+    # compile): the model trains on templates, the browser fills the slots. EDIT and
+    # EXPLAIN rows use the anchor-copy mechanism instead, so leave them literal.
+    if args.delex:
+        out = [(en, py) if (en.startswith("EDIT ") or en.startswith("EXPLAIN ")
+                            or split_directive(py)) else delex.delex_pair(en, py)
+               for en, py in out]
+        print("delexicalized generate rows (copied literals -> slot markers)")
     random.shuffle(out)
     n_e = sum(1 for _, py in out if split_directive(py))
     print(f"kept {len(out)} unique valid pairs ({n_e} edit, rejected {rejected})")
