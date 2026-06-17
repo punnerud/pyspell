@@ -21,9 +21,82 @@ use std::task::{Poll, Waker};
 use crypto_box::aead::{Aead, Nonce};
 use crypto_box::{PublicKey, SalsaBox, SecretKey};
 use tailscale_core::platform::AsyncByteStream;
-use tailscale_core::{h2, noise, transport};
+use tailscale_core::{h2, noise, tcp, transport, wg};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+
+fn now_ms() -> u64 {
+    js_sys::Date::now() as u64
+}
+
+// --- Phase 2: serve PySpell over the tunnel (the simulated ESP32) ------------
+static NODE_PAGE: &[u8] = b"<!doctype html><meta charset=utf-8><title>PySpell \xc2\xb7 your browser ESP32</title><body style='margin:0;font-family:system-ui;background:#0d1117;color:#e6edf3;padding:1.4rem;line-height:1.5'><h2>\xf0\x9f\xa7\xaa Hello from your browser-simulated ESP32</h2><p>This page is served by a PySpell node running in <b>another browser tab on your tailnet</b> \xe2\x80\x94 reached over Tailscale (control + DERP + WireGuard, all WebAssembly, ~150&nbsp;kB). Try the API:</p><pre style='background:#161b22;border:1px solid #30363d;border-radius:8px;padding:.8rem'>curl http://&lt;this-node&gt;/run -d '21*2'   # =&gt; 42\ncurl http://&lt;this-node&gt;/run -d 'max([3,9,5])'</pre></body>";
+
+fn render_value(v: &pyspell_core::Value) -> String {
+    use pyspell_core::Value;
+    match v {
+        Value::Int(n) => format!("{n}"),
+        Value::Float(x) => format!("{x}"),
+        Value::Bool(b) => format!("{b}"),
+        Value::Str(s) => s.to_string(),
+        Value::List(l) => {
+            let mut s = String::from("[");
+            for (i, it) in l.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&render_value(it));
+            }
+            s.push(']');
+            s
+        }
+    }
+}
+fn run_pyspell(code: &str) -> String {
+    use pyspell_core::{eval, parse, Lang, Limits};
+    let code = code.trim();
+    if code.is_empty() {
+        return "error: empty program".into();
+    }
+    let prog = match parse(code, Lang::Python) {
+        Ok(p) => p,
+        Err(e) => return format!("error: {e}"),
+    };
+    let env = |_: &str| None::<pyspell_core::Value>;
+    let limits = Limits {
+        max_steps: 1_000_000,
+        max_bytes: 131_072,
+        deadline: None,
+        net: None,
+        display: None,
+        actuator: None,
+    };
+    match eval::run_with(&prog, &env, limits) {
+        Ok(v) => render_value(&v),
+        Err(e) => format!("error: {e}"),
+    }
+}
+/// In-tunnel HTTP routes the browser node serves to tailnet peers (your phone).
+fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<tcp::HttpReply> {
+    let _ = method;
+    match path {
+        "/" => Some(tcp::HttpReply::ok_owned("text/html; charset=utf-8", NODE_PAGE.to_vec())),
+        "/run" => {
+            let code = if !body.is_empty() {
+                String::from_utf8_lossy(body).into_owned()
+            } else {
+                // allow ?code=... too
+                query
+                    .split('&')
+                    .find_map(|kv| kv.strip_prefix("code="))
+                    .map(|s| s.replace('+', " "))
+                    .unwrap_or_default()
+            };
+            Some(tcp::HttpReply::ok_owned("text/plain; charset=utf-8", run_pyspell(&code).into_bytes()))
+        }
+        _ => None,
+    }
+}
 
 const CONTROL_HOST: &str = "controlplane.tailscale.com";
 const CAP_VER: u32 = 90;
@@ -373,6 +446,7 @@ async fn register_inner(control_pub_hex: &str, auth_key: &str) -> Result<String,
 const FRAME_SERVER_KEY: u8 = 0x01;
 const FRAME_CLIENT_INFO: u8 = 0x02;
 const FRAME_SERVER_INFO: u8 = 0x03;
+const FRAME_SEND_PACKET: u8 = 0x04;
 const FRAME_RECV_PACKET: u8 = 0x05;
 const FRAME_KEEPALIVE: u8 = 0x06;
 const DERP_MAGIC: &[u8] = b"DERP\xf0\x9f\x94\x91"; // "DERP🔑"
@@ -440,6 +514,13 @@ impl DerpConn {
         f.extend_from_slice(payload);
         self.stream.write_all(&f).await.map_err(|_| "derp write".to_string())
     }
+    /// Relay a packet to a peer (addressed by node public key) via the DERP server.
+    async fn send_packet(&mut self, dst_node_pub: &[u8; 32], pkt: &[u8]) -> Result<(), String> {
+        let mut payload = Vec::with_capacity(32 + pkt.len());
+        payload.extend_from_slice(dst_node_pub);
+        payload.extend_from_slice(pkt);
+        self.write_frame(FRAME_SEND_PACKET, &payload).await
+    }
 }
 
 /// Connect to a DERP relay over WebSocket, do the DERP handshake (our node key = DERP
@@ -484,28 +565,77 @@ async fn derp_inner(derp_host: &str) -> Result<String, String> {
     ci.extend_from_slice(&nbytes);
     ci.extend_from_slice(&ct);
     d.write_frame(FRAME_CLIENT_INFO, &ci).await?;
-    dlog("✅ DERP session up — open your node's IP from the phone and watch for packets".into());
+    dlog("✅ DERP session up — open your node's IP from another tailnet device".into());
 
+    // Phase 2: be the WireGuard RESPONDER + serve PySpell over the tunnel.
+    let mut tcpsrv = tcp::TcpServer::with_handler(route);
+    let mut tuns: Vec<(u32, wg::Tunnel, [u8; 32])> = Vec::new(); // (our_index, tunnel, peer node)
     let mut npkt = 0u32;
     loop {
         let (typ, payload) = d.read_frame().await?;
-        match typ {
-            FRAME_RECV_PACKET if payload.len() >= 32 => {
-                let src = &payload[..32];
-                let inner = &payload[32..];
-                let kind = match inner.first() {
-                    Some(1) => "WG init",
-                    Some(2) => "WG resp",
-                    Some(4) => "WG transport",
-                    Some(_) => "disco/other",
-                    None => "empty",
-                };
+        if typ == FRAME_KEEPALIVE {
+            continue;
+        }
+        if typ == FRAME_SERVER_INFO {
+            dlog("server info received".into());
+            continue;
+        }
+        if typ != FRAME_RECV_PACKET || payload.len() < 32 {
+            continue;
+        }
+        let mut src = [0u8; 32];
+        src.copy_from_slice(&payload[..32]);
+        let inner = payload[32..].to_vec();
+        match inner.first().copied() {
+            Some(1) => {
+                // WireGuard initiation → respond, build the tunnel (we are responder).
                 npkt += 1;
-                dlog(format!("📦 recv #{npkt} from {}: {} B [{kind}]", hex8(src), inner.len()));
+                let mut ib = [0u8; 4];
+                let _ = web_getrandom(&mut ib);
+                let our_index = u32::from_le_bytes(ib);
+                match wg::consume_initiation(&node_priv, &node_pub, &inner, our_index) {
+                    Ok((resp, tun, _peer)) => {
+                        d.send_packet(&src, &resp).await?;
+                        tuns.push((our_index, tun, src));
+                        if tuns.len() > 4 {
+                            tuns.remove(0);
+                        }
+                        dlog(format!("🤝 #{npkt} WG handshake from {} — tunnel up", hex8(&src)));
+                    }
+                    Err(e) => dlog(format!("WG init error: {e}")),
+                }
             }
-            FRAME_KEEPALIVE => {}
-            FRAME_SERVER_INFO => dlog("server info received".into()),
-            other => dlog(format!("frame 0x{other:02x} ({} B)", payload.len())),
+            Some(4) => {
+                // WireGuard transport → decrypt, serve via tcp.rs, reply through DERP.
+                if inner.len() < 8 {
+                    continue;
+                }
+                let ri = u32::from_le_bytes([inner[4], inner[5], inner[6], inner[7]]);
+                if let Some(pos) = tuns.iter().position(|t| t.0 == ri) {
+                    let plain = match tuns[pos].1.decrypt(&inner) {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    if plain.is_empty() {
+                        continue; // keepalive
+                    }
+                    let now = now_ms();
+                    let mut outs: Vec<Vec<u8>> = Vec::new();
+                    {
+                        let tun = &mut tuns[pos].1;
+                        tcpsrv.handle_stream(&plain, now, |seg| outs.push(tun.encrypt(seg)));
+                    }
+                    let peer = tuns[pos].2;
+                    if !outs.is_empty() {
+                        npkt += 1;
+                        dlog(format!("➡ #{npkt} served {} reply segment(s) to {}", outs.len(), hex8(&peer)));
+                    }
+                    for enc in &outs {
+                        d.send_packet(&peer, enc).await?;
+                    }
+                }
+            }
+            _ => { /* disco / other — ignored (DERP-relayed, no direct path needed) */ }
         }
     }
 }

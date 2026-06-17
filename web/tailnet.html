@@ -38,10 +38,11 @@ same login URL — no new one each time). This is a Phase-0 spike: it proves reg
 <p class="s" id="ipline"></p>
 
 <div class="box" id="derpbox" style="display:none">
-  <b>Phase 1 — data plane (DERP)</b>
-  <p class="s" style="color:#9da7b3">Connect this node to its DERP relay, then on your phone (same tailnet) open
-  <code id="phoneurl"></code> — you should see <code>📦 recv</code> packets arrive here (proof the phone reaches this
-  browser node over Tailscale). Replying to them = Phase 2.</p>
+  <b>Data plane (DERP + WireGuard) — this node now SERVES PySpell</b>
+  <p class="s" style="color:#9da7b3">Connect this node to its DERP relay, then from another tailnet device open
+  <code id="phoneurl"></code> — it answers the WireGuard handshake (<code>🤝</code>) and serves the in-browser
+  PySpell server (<code>➡ served</code>). Try <code>http://&lt;node&gt;/run</code> with body <code>21*2</code> → <code>42</code>.
+  The tab <b>must stay open</b> (it <em>is</em> the node).</p>
   <button id="derp">Connect DERP</button>
   <button id="copylog" class="sec">Copy log</button>
   <div class="s" id="derplog" style="margin-top:.6rem;white-space:pre-wrap;max-height:14rem;overflow:auto;-webkit-user-select:text;user-select:text"></div>
