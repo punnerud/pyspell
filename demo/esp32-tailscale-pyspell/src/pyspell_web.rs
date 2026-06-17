@@ -75,6 +75,21 @@ pub fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<HttpR
         "/tinyllm_wasm_bg.wasm" => {
             Some(HttpReply::ok_static("application/wasm", WASM_BG).cached(CACHE))
         }
+        // Phase B: the word dictionary (tokens + POS types) + the int8 embedding matrix,
+        // for in-browser input validation + RAG/word-search over the same vocab. Served
+        // from the packed image (v2); None (404) for older images.
+        "/wordmeta" => crate::model_host::wordmeta_source().map(|source| HttpReply {
+            status: 200,
+            content_type: "application/json",
+            source,
+            cache_control: Some(CACHE),
+        }),
+        "/embeddings" => crate::model_host::embeddings_source().map(|source| HttpReply {
+            status: 200,
+            content_type: "application/octet-stream",
+            source,
+            cache_control: Some(CACHE),
+        }),
         _ => None,
     }
 }
@@ -364,6 +379,7 @@ button{background:#238636;color:#fff;border:0;border-radius:6px;padding:6px 12px
 <span style=opacity:.6>no key → local offline model</span>
 <input id=key type=password placeholder="OpenAI key" size=12>
 <input id=model value=gpt-4o-mini size=10>
+<input id=wsearch placeholder="related words" size=9 onkeydown="if(event.key=='Enter')words(this.value)">
 <button class=sec onclick=verify()>Verify</button>
 <button class=sec onclick=clr()>Clear</button>
 <a href="https://punnerud.github.io/pyspell/" target=_blank>docs</a></header>
@@ -387,7 +403,29 @@ function sys(){return 'You are a coding assistant for PySpell: a sandboxed Pytho
 function ask(p){const t=p+':\n'+$('code').value;send(t)}
 async function send(pre){const text=pre||$('msg').value;if(!text)return
 $('msg').value='';chat.push({role:'user',content:text});render();save()
-if($('key').value){await openai()}else{await local(text)}}
+if($('key').value){await openai()}else{
+const bad=await validate(text);if(bad.length){chat.push({role:'assistant',content:'⚠ outside the model vocabulary: '+bad.join(', ')+' — the local model may not understand these (rephrase with common words).'});render()}
+await local(text)}}
+// Phase B: word dictionary + embeddings served from the dongle, for input validation
+// + related-word search (RAG over our OWN vocab — the same table the model thinks in).
+let _wm
+async function ensureWords(){if(_wm)return _wm
+const meta=await (await fetch('/wordmeta')).json()
+const eb=new Int8Array(await (await fetch('/embeddings')).arrayBuffer())
+const words={},wlist=[]
+meta.tokens.forEach((t,i)=>{const w=t.trim().toLowerCase();if(/^[a-z]{2,}$/.test(w)&&!(w in words)){words[w]=i;wlist.push(w)}})
+return _wm={meta,eb,dim:meta.dim,words,wlist}}
+async function validate(text){let wm;try{wm=await ensureWords()}catch(e){return[]}
+const set=new Set(wm.wlist),bad=[]
+for(const w of (text.toLowerCase().match(/[a-z]+/g)||[]))if(w.length>1&&!set.has(w)&&!bad.includes(w))bad.push(w)
+return bad}
+function cos(eb,dim,a,b){let d=0,na=0,nb=0;for(let i=0;i<dim;i++){const x=eb[a*dim+i],y=eb[b*dim+i];d+=x*y;na+=x*x;nb+=y*y}return d/(Math.sqrt(na*nb)+1e-9)}
+async function words(q){q=(q||'').trim().toLowerCase();if(!q)return
+let wm;try{wm=await ensureWords()}catch(e){chat.push({role:'assistant',content:'words unavailable: '+e});render();return}
+const id=wm.words[q]
+if(id===undefined){chat.push({role:'assistant',content:'“'+q+'” is not in the dictionary ('+wm.wlist.length+' words)'});render();return}
+const sc=wm.wlist.filter(w=>w!==q).map(w=>[w,cos(wm.eb,wm.dim,id,wm.words[w])]).sort((a,b)=>b[1]-a[1]).slice(0,8)
+chat.push({role:'assistant',content:'related to “'+q+'”: '+sc.map(x=>x[0]+' ('+x[1].toFixed(2)+')').join(', ')});render()}
 async function openai(){const key=$('key').value
 const msgs=[{role:'system',content:sys()},{role:'user',content:'Current code:\n'+$('code').value},...chat]
 try{const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+key},body:JSON.stringify({model:$('model').value,messages:msgs})})
