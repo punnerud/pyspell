@@ -405,7 +405,7 @@ async function send(pre){const text=pre||$('msg').value;if(!text)return
 $('msg').value='';chat.push({role:'user',content:text});render();save()
 if($('key').value){await openai()}else{
 const bad=await validate(text);if(bad.length){chat.push({role:'assistant',content:'⚠ outside the model vocabulary: '+bad.join(', ')+' — the local model may not understand these (rephrase with common words).'});render()}
-if($('code').value.trim()&&/\b(change|rename|instead|replace|swap|make it|count down|upper bound|use the)\b/i.test(text)){await localEdit(text)}else{await local(text)}}}
+if($('code').value.trim()&&/\b(change|rename|instead|replace|swap|make it|count down|upper bound|use the|delete|remove|move|put .* below|everywhere|all occurrences|uses of)\b/i.test(text)){await editLoop(text)}else{await local(text)}}}
 // Phase B: word dictionary + embeddings served from the dongle, for input validation
 // + related-word search (RAG over our OWN vocab — the same table the model thinks in).
 let _wm
@@ -449,26 +449,53 @@ save()}
 // Anchor-based edit: the model emits a find/replace directive "@@ old ==> new" for a
 // small window the browser retrieved; the browser does the actual edit (line.replace),
 // so lists/long tails are never copied by the model.
-function parseEdit(t){const m=t.match(/@@ ([\s\S]*?) ==> ([\s\S]*?)(?:\n|$)/);return m?{o:m[1],n:m[2]}:null}
-async function localEdit(instr){const i=chat.push({role:'assistant',content:'⏳ editing…'})-1;render()
+// Parse the first directive in the model output: @@ replace / DEL / MOVE / RENAME.
+function parseDirective(t){for(const l of t.split('\n')){
+if(l.startsWith('@@ ')){const m=l.match(/^@@ (.*?) ==> ([\s\S]*)$/);if(m)return{op:'@@',a:m[1],b:m[2]}}
+if(l.startsWith('DEL ')&&l.length>4){return{op:'DEL',a:l.slice(4)}}
+if(l.startsWith('RENAME ')){const m=l.match(/^RENAME (.*?) ==> (.*)$/);if(m)return{op:'RENAME',a:m[1],b:m[2]}}
+if(l.startsWith('MOVE ')){const m=l.match(/^MOVE (.*?) ==> (.*)$/);if(m)return{op:'MOVE',a:m[1],b:m[2]}}}
+return null}
+function esc(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
+// Apply a directive to `lines` (browser holds the file). Returns a status string, or null.
+function applyDirective(lines,d,best){
+const find=n=>{for(let o=0;o<lines.length;o++){const j=(best+o)%lines.length;if(lines[j].includes(n))return j}return -1}
+if(d.op==='@@'){const j=find(d.a);if(j<0)return null;lines[j]=lines[j].replace(d.a,d.b);return 'replaced line '+(j+1)}
+if(d.op==='DEL'){const j=find(d.a);if(j<0)return null;lines.splice(j,1);return 'deleted line '+(j+1)}
+if(d.op==='RENAME'){const re=new RegExp('\\b'+esc(d.a)+'\\b','g');let c=0;for(let i=0;i<lines.length;i++){const b=lines[i];lines[i]=b.replace(re,d.b);if(lines[i]!==b)c++}return c?('renamed '+JSON.stringify(d.a)+'→'+JSON.stringify(d.b)+' in '+c+' line(s)'):null}
+if(d.op==='MOVE'){const s=find(d.a);if(s<0)return null;const ln=lines.splice(s,1)[0];let dj=-1;for(let i=0;i<lines.length;i++){if(lines[i].includes(d.b)){dj=i;break}}if(dj<0){lines.splice(s,0,ln);return null}lines.splice(dj+1,0,ln);return 'moved after line '+(dj+1)}
+return null}
+function winAround(lines,best,pad){return lines.slice(Math.max(0,best-pad),Math.min(lines.length,best+1+pad)).join('\n')}
+// Deterministic instruction parse for the copy-heavy ops (rename/move/delete) — these are
+// fully specified by the text, so the browser builds the directive directly (no model,
+// 100% reliable). The model is reserved for semantic @@ edits (change a value/operator).
+function parseInstruction(instr,lines){let m
+if((m=instr.match(/\brename\s+(\w+)\s+to\s+(\w+)/i))||(m=instr.match(/\bchange\s+every\s+(\w+)\s+to\s+(\w+)/i))||(m=instr.match(/\bcall\s+(\w+)\s+(\w+)\s+everywhere/i)))return{op:'RENAME',a:m[1],b:m[2]}
+if((m=instr.match(/\bmove\s+(?:the\s+)?(\w+)\b[\s\S]*?\b(?:after|below)\s+(?:the\s+)?(\w+)/i))||(m=instr.match(/\bput\s+(\w+)\s+below\s+(\w+)/i)))return{op:'MOVE',a:m[1],b:m[2]}
+if(/\b(delete|remove)\b/i.test(instr)){const stop=['delete','remove','the','line','that','this','a','please','print'];const ws=(instr.toLowerCase().match(/[a-z_]\w+/g)||[]).filter(w=>!stop.includes(w));let bw=null,bn=1e9;for(const w of ws){const c=lines.filter(l=>l.toLowerCase().includes(w)).length;if(c>=1&&c<bn){bn=c;bw=w}}if(bw)return{op:'DEL',a:bw}}
+return null}
+// Browser-driven edit loop: retrieve a window, generate a directive, apply it; if it
+// doesn't apply, widen the window and retry (<=3 rounds). The model never holds the file.
+async function editLoop(instr){const i=chat.push({role:'assistant',content:'⏳ editing…'})-1;render()
 const set=t=>{chat[i].content=t;render()}
 let m;try{m=await ensureLocal(set)}catch(e){set('load failed: '+e);return}
 let wm=null;try{wm=await ensureWords()}catch(e){}
-const lines=$('code').value.split('\n');if(!$('code').value.trim()){set('(no code to edit)');return}
-let best=0,bestsc=-1
-if(wm){const q=meanEmb(wm,instr);if(q)lines.forEach((ln,j)=>{const e=meanEmb(wm,ln);if(e){const s=cosv(q,e);if(s>bestsc){bestsc=s;best=j}}})}
-let win=lines[best];if(best+1<lines.length&&/^\s/.test(lines[best+1]))win+='\n'+lines[best+1]
+if(!$('code').value.trim()){set('(no code to edit)');return}
+const base=$('code').value.split('\n');let best=0,bestsc=-1
+if(wm){const q=meanEmb(wm,instr);if(q)base.forEach((ln,j)=>{const e=meanEmb(wm,ln);if(e){const s=cosv(q,e);if(s>bestsc){bestsc=s;best=j}}})}
 set('')
-let out='',p;const g=new m.mod.Generator(m.model,m.tok,'EDIT '+instr+'\n'+win,48,0,0.9,1)
-while((p=g.step())!==undefined){out+=p}
-const ed=parseEdit(out)
-if(!ed||!ed.o){set('no edit produced: '+JSON.stringify(out.slice(0,80)));return}
-let tgt=-1
-for(let off=0;off<lines.length;off++){const j=(best+off)%lines.length;if(lines[j].includes(ed.o)){tgt=j;break}}
-if(tgt<0){set('anchor not found in code: '+JSON.stringify(ed.o));return}
-lines[tgt]=lines[tgt].replace(ed.o,ed.n);$('code').value=lines.join('\n');save()
-set('✎ line '+(tgt+1)+': '+JSON.stringify(ed.o)+' → '+JSON.stringify(ed.n)+'  ⟨local edit⟩')}
-function editBtn(){const t=$('msg').value;if(!t)return;$('msg').value='';chat.push({role:'user',content:t});render();save();localEdit(t)}
+// rename/move/delete: deterministic from the instruction — no model needed
+const di=parseInstruction(instr,base)
+if(di){const lines=$('code').value.split('\n');const res=applyDirective(lines,di,best);if(res){$('code').value=lines.join('\n');save();set('✎ '+res+'  ⟨browser⟩');return}}
+for(const pad of [0,2,4]){
+const win=winAround(base,best,pad)
+let out='',p;const g=new m.mod.Generator(m.model,m.tok,'EDIT '+instr+'\n'+win,48,0,0.9,1+pad)
+while((p=g.step())!==undefined)out+=p
+const d=parseDirective(out);if(!d)continue
+const lines=$('code').value.split('\n');const res=applyDirective(lines,d,best)
+if(res){$('code').value=lines.join('\n');save();set('✎ '+res+'  ⟨local edit⟩');return}}
+set('couldn’t apply an edit — try rephrasing')}
+function editBtn(){const t=$('msg').value;if(!t)return;$('msg').value='';chat.push({role:'user',content:t});render();save();editLoop(t)}
 async function openai(){const key=$('key').value
 const msgs=[{role:'system',content:sys()},{role:'user',content:'Current code:\n'+$('code').value},...chat]
 try{const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+key},body:JSON.stringify({model:$('model').value,messages:msgs})})

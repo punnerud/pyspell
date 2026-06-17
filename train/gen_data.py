@@ -45,7 +45,7 @@ WEAK_FAMILIES = [4, 6, 7, 10]
 def gen_example(fam=None):
     """Return one (en, py) pair from a template family (random, or a forced `fam`)."""
     if fam is None:
-        fam = random.randint(0, 14)
+        fam = random.randint(0, 21)
     if fam == 0:
         w = _word()
         en = random.choice([f"print {w}", f"say {w}", f"output the word {w}", f"display {w}"])
@@ -106,11 +106,44 @@ def gen_example(fam=None):
         a = _int()
         en = random.choice([f"check if {a} is even", f"is {a} even or odd"])
         py = f"print(\"even\" if {a} % 2 == 0 else \"odd\")"
-    else:
+    elif fam == 14:
         w = _word()
         en = random.choice([f"reverse the word {w}", f"print {w} backwards"])
         py = f'print("{w}"[::-1])'
+    elif fam == 15:  # percent
+        a, p = _int(5, 95), random.choice([10, 15, 20, 25, 50])
+        en = random.choice([f"what is {p}% of {a}", f"{p} percent of {a}"])
+        py = f"print({p / 100} * {a})"
+    elif fam == 16:  # average of two
+        a, b = _int(), _int()
+        en = random.choice([f"average of {a} and {b}", f"the mean of {a} and {b}"])
+        py = f"print(({a} + {b}) / 2)"
+    elif fam == 17:  # power
+        a, b = _int(2, 9), _int(2, 4)
+        en = random.choice([f"{a} to the power of {b}", f"raise {a} to {b}"])
+        py = f"print({a} ** {b})"
+    elif fam == 18:  # modulo / remainder
+        a, b = _int(10, 40), _int(2, 9)
+        en = random.choice([f"remainder of {a} divided by {b}", f"{a} mod {b}"])
+        py = f"print({a} % {b})"
+    elif fam == 19:  # rounding
+        x, k = round(random.uniform(1, 99), 3), _int(0, 2)
+        en = random.choice([f"round {x} to {k} places", f"round {x} to {k} decimals"])
+        py = f"print(round({x}, {k}))"
+    elif fam == 20:  # larger / smaller of two
+        a, b = _int(), _int()
+        fn, verb = random.choice([("max", "larger"), ("min", "smaller")])
+        en = random.choice([f"the {verb} of {a} and {b}", f"which is {verb}, {a} or {b}"])
+        py = f"print({fn}({a}, {b}))"
+    else:  # fam 21 — multi-step
+        a, b = _int(1, 20), _int(1, 20)
+        en = random.choice([f"add {a} and {b} then double it", f"double the sum of {a} and {b}"])
+        py = f"print(({a} + {b}) * 2)"
     return en, py
+
+
+# Math families (for curate --boost and eval grouping).
+MATH_FAMILIES = [15, 16, 17, 18, 19, 20, 21]
 
 
 def gen_edit_example():
@@ -156,6 +189,55 @@ def gen_edit_example():
         old, new = f"range(1, {a + 1})", f"range({a}, 0, -1)"
         en = random.choice(["count down instead", "reverse the direction", "go downwards"])
     return en, window, f"@@ {old} ==> {new}"
+
+
+def _unique_anchor(window, line):
+    """Shortest prefix of `line` (stripped) that occurs in exactly one window line —
+    keeps the anchor the model must copy as small as possible."""
+    rows = window.split("\n")
+    target = line.strip()
+    for end in range(2, len(target) + 1):
+        cand = target[:end]
+        if sum(1 for r in rows if cand in r) == 1:
+            return cand
+    return target
+
+
+def gen_delete_example():
+    """Delete a whole line: `DEL <anchor>`; removing it must still compile."""
+    templates = [
+        ("total = 0\nfor i in nums:\n    total = total + i", "total = 0",
+         ["remove the initializer", "delete the total line"]),
+        ('print("debug")\nprint(result)', 'print("debug")',
+         ["delete the debug print", "remove the debug line"]),
+        ("x = 5\ny = 10\nprint(x + y)", "y = 10", ["remove the y line", "delete the y line"]),
+        ("a = 1\nb = 2\nc = 3\nprint(a + c)", "b = 2", ["delete the b line", "remove b"]),
+    ]
+    window, line, instrs = random.choice(templates)
+    return random.choice(instrs), window, f"DEL {_unique_anchor(window, line)}"
+
+
+def gen_rename_example():
+    """Global rename a name that appears 2-3 times: `RENAME <old> ==> <new>`."""
+    n1, n2 = random.sample(["count", "total", "x", "y", "result", "value", "num"], 2)
+    forms = [
+        f"{n1} = 0\n{n1} = {n1} + 1\nprint({n1})",
+        f"{n1} = 5\nprint({n1})\nprint({n1} * 2)",
+        f"def {n1}(a, b):\n    return a + b\nprint({n1}(1, 2))",
+    ]
+    window = random.choice(forms)
+    instrs = [f"rename {n1} to {n2}", f"call {n1} {n2} everywhere", f"change every {n1} to {n2}"]
+    return random.choice(instrs), window, f"RENAME {n1} ==> {n2}"
+
+
+def gen_move_example():
+    """Move a line after another: `MOVE <anchor> ==> <dest>` (reorder independent stmts)."""
+    (na, va), (nb, vb) = random.sample([("x", "5"), ("y", "10"), ("z", "3"), ("n", "7")], 2)
+    window = f"{na} = {va}\n{nb} = {vb}\nprint({na} + {nb})"
+    instrs = [f"move the {na} line after the {nb} line", f"put {na} below {nb}"]
+    src = _unique_anchor(window, f"{na} = {va}")
+    dest = _unique_anchor(window, f"{nb} = {vb}")
+    return random.choice(instrs), window, f"MOVE {src} ==> {dest}"
 
 
 def qwen_examples(model: str, n: int):

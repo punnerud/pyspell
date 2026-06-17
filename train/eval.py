@@ -86,10 +86,81 @@ def eval_edit(model, tk, device, n, seed, show):
         print(f"  EN  : {en}\n  GOLD: {gold!r}\n  GOT : {out!r}\n")
 
 
+def apply_directive(window, block):
+    """Apply a directive to a window (mirrors the browser/curate); None if not applicable."""
+    rows = window.split("\n")
+    if block.startswith("@@ "):
+        m = re.match(r"^@@ (.*?) ==> (.*)$", block)
+        if m:
+            for i, r in enumerate(rows):
+                if m.group(1) in r:
+                    rows[i] = r.replace(m.group(1), m.group(2), 1)
+                    return "\n".join(rows)
+    elif block.startswith("DEL "):
+        hit = [i for i, r in enumerate(rows) if block[4:] in r]
+        if len(hit) == 1:
+            return "\n".join(r for i, r in enumerate(rows) if i != hit[0])
+    elif block.startswith("RENAME "):
+        m = re.match(r"^RENAME (.*?) ==> (.*)$", block)
+        if m:
+            return re.sub(r"\b" + re.escape(m.group(1)) + r"\b", m.group(2), window)
+    elif block.startswith("MOVE "):
+        m = re.match(r"^MOVE (.*?) ==> (.*)$", block)
+        if m:
+            si = [i for i, r in enumerate(rows) if m.group(1) in r]
+            di = [i for i, r in enumerate(rows) if m.group(2) in r]
+            if len(si) == 1 and len(di) == 1 and si[0] != di[0]:
+                s = rows.pop(si[0])
+                d2 = [i for i, r in enumerate(rows) if m.group(2) in r][0]
+                rows.insert(d2 + 1, s)
+                return "\n".join(rows)
+    return None
+
+
+def _first_directive(out):
+    for l in out.split("\n"):
+        if l.startswith("@@ ") or l.split(" ", 1)[0] in ("DEL", "MOVE", "RENAME"):
+            return l
+    return None
+
+
+def eval_directive(model, tk, device, n, seed, show, gen, label):
+    import curate
+    random.seed(seed)
+    cases = [gen() for _ in range(n)]
+    cases = [(en, w, b) for en, w, b in cases if curate.valid_directive(w, b)]
+    loc = ae = astr = comp = 0
+    fails = []
+    for en, window, block in cases:
+        gold = norm(apply_directive(window, block))
+        out = generate(model, tk, device, "EDIT " + en + "\n" + window, max_new=48, temperature=0.0)
+        line = _first_directive(out)
+        applied = apply_directive(window, line) if line else None
+        located = applied is not None
+        if applied is not None:
+            applied = norm(applied)
+        loc += located
+        ae += applied == gold
+        s = applied is not None and mask(applied) == mask(gold)
+        c = applied is not None and compiles(applied)
+        astr += s
+        comp += c
+        if not s:
+            fails.append((en, gold, out.strip()))
+    tot = max(len(cases), 1)
+    print(f"\n=== {len(cases)} {label} tests ===")
+    for name, v in (("located", loc), ("exact", ae), ("struct", astr), ("compiles", comp)):
+        print(f"{name:8}: {v}/{len(cases)}  ({100*v//tot}%)")
+    print(f"=== sample failures ({min(show, len(fails))}) ===")
+    for en, gold, out in fails[:show]:
+        print(f"  EN  : {en}\n  GOLD: {gold!r}\n  GOT : {out!r}\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="out")
-    ap.add_argument("--task", choices=["generate", "edit"], default="generate")
+    ap.add_argument("--task", choices=["generate", "edit", "delete", "rename", "move"],
+                    default="generate")
     ap.add_argument("--n", type=int, default=400)
     ap.add_argument("--seed", type=int, default=4242, help="!= train seed -> unseen values")
     ap.add_argument("--show", type=int, default=12, help="sample failures to print")
@@ -108,6 +179,11 @@ def main():
 
     if args.task == "edit":
         eval_edit(model, tk, device, args.n, args.seed, args.show)
+        return
+    if args.task in ("delete", "rename", "move"):
+        gen = {"delete": gen_data.gen_delete_example, "rename": gen_data.gen_rename_example,
+               "move": gen_data.gen_move_example}[args.task]
+        eval_directive(model, tk, device, args.n, args.seed, args.show, gen, args.task)
         return
 
     # held-out test set: templates with a fresh seed (unseen values) + the seeds file.
