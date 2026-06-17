@@ -70,6 +70,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="out", help="dir with ckpt.pt")
     ap.add_argument("--image", default=None, help="output image path (default out/model.img)")
+    ap.add_argument("--emit-web", default=None, metavar="DIR",
+                    help="also write DIR/model.bin + DIR/tokenizer.bin for the Pages/WASM "
+                         "demo (the same raw payloads the model.img packs) — no offset fiddling")
     args = ap.parse_args()
 
     best = os.path.join(args.out, "best.pt")
@@ -84,6 +87,17 @@ def main():
     model_bytes = export(model, cfg.group_size)
     with open(os.path.join(args.out, "tokenizer.bin"), "rb") as f:
         tok_bytes = f.read()  # the BPE tokenizer written during training
+
+    # Browser/Pages assets: the SAME raw payloads packed into model.img, written as the
+    # two files the WASM demo fetches (web/model.bin + web/tokenizer.bin).
+    if args.emit_web:
+        os.makedirs(args.emit_web, exist_ok=True)
+        with open(os.path.join(args.emit_web, "model.bin"), "wb") as f:
+            f.write(model_bytes)
+        with open(os.path.join(args.emit_web, "tokenizer.bin"), "wb") as f:
+            f.write(tok_bytes)
+        print(f"emit-web: wrote {args.emit_web}/model.bin ({len(model_bytes)} B) + "
+              f"tokenizer.bin ({len(tok_bytes)} B)")
 
     # Optional Phase-B blobs: word metadata (tokens+POS types) + the frozen embedding
     # matrix (int8). Served to the browser for input validation + RAG. Present when the

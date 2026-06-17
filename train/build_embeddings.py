@@ -27,6 +27,14 @@ def _has_letters(piece: bytes) -> bool:
     return any(chr(b) in _LETTERS for b in piece)
 
 
+def _is_placeholder(piece: bytes) -> bool:
+    """Delexicalization slot markers (#0.. / &a..) carry a letter (a/b/c/d) but are NOT
+    words — they get the non-semantic per-token + NUM/STR type embedding, like digits."""
+    t = piece.decode("latin1").strip()
+    return (len(t) == 2 and ((t[0] == "#" and t[1].isdigit())
+                             or (t[0] == "&" and t[1].isalpha())))
+
+
 def _embed_text(piece: bytes) -> str:
     return piece.decode("latin1").strip()
 
@@ -63,7 +71,7 @@ def build(tk, out_dir, dim):
     E = np.zeros((V, 384), dtype=np.float32)
     has_sem = np.zeros(V, dtype=bool)
     for i, piece in enumerate(tk.tokens):
-        if _has_letters(piece):
+        if _has_letters(piece) and not _is_placeholder(piece):
             txt = _embed_text(piece)
             if txt:
                 E[i] = np.array(ollama_embed(txt, cache), dtype=np.float32)

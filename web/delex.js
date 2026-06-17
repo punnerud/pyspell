@@ -28,8 +28,11 @@ export function delexEn(en) {
 }
 
 export function relex(code, nums, strs) {
-  return code.replace(/#[0-7]|&[a-d]/g, (p) => {
-    if (p[0] === '#') { const i = +p[1]; return i < nums.length ? nums[i] : p }
-    const i = p.charCodeAt(1) - 97; return i < strs.length ? strs[i] : p
+  // Fill known slots; unfilled markers (the model over-generated, e.g. extra list
+  // elements) become \0 and are dropped with an adjacent comma so lists stay valid.
+  let s = code.replace(/#[0-7]|&[a-d]/g, (p) => {
+    if (p[0] === '#') { const i = +p[1]; return i < nums.length ? nums[i] : '\0' }
+    const i = p.charCodeAt(1) - 97; return i < strs.length ? strs[i] : '\0'
   })
+  return s.replace(/\s*,\s*\0/g, '').replace(/\0\s*,\s*/g, '').replace(/\0/g, '')
 }
