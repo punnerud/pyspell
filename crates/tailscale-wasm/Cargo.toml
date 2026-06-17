@@ -1,0 +1,39 @@
+[package]
+name = "tailscale-wasm"
+description = "Browser-WASM binding for tailscale-core — join the user's OWN tailnet from the browser over WebSocket (control + DERP), no Go client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["morten@punnerud.net"]
+
+[lib]
+crate-type = ["cdylib"]
+
+# Our own Rust Tailscale client (tailscale-core), compiled to wasm32. The browser has
+# no raw TCP/UDP, so the transport is WebSocket: control over wss .../ts2021 (subprotocol
+# `control`, ts2021 handshake init in the `tskey` query), data over DERP-WS. Reuses the
+# crate's async control path (AsyncConn/AsyncH2/noise) verbatim.
+[dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+# getrandom `custom` is forced by tailscale-core; on wasm32-unknown-unknown we register a
+# web-crypto source (see register_custom_getrandom! in lib.rs).
+getrandom = { version = "0.2", features = ["custom"] }
+# snow 0.10 transitively pulls getrandom 0.3, which needs the wasm_js backend on
+# wasm32-unknown-unknown (feature here + the cfg flag in .cargo/config.toml).
+getrandom_v3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
+tailscale-core = { path = "../../demo/esp32-tailscale-pyspell/core" }
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Window", "WebSocket", "MessageEvent", "BinaryType", "CloseEvent", "ErrorEvent",
+    "Crypto", "Storage",
+]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
