@@ -31,6 +31,7 @@ same login URL — no new one each time). This is a Phase-0 spike: it proves reg
   <div id="authbox" style="display:none;margin-top:.6rem">
     Open this to authorize the node (new window):<br>
     <a id="authurl" target="_blank" rel="noopener"></a>
+    <button id="copyurl" class="sec" style="margin-top:.3rem">Copy URL</button>
     <div class="s pend" id="poll" style="margin-top:.5rem">waiting for you to authorize…</div>
   </div>
 </div>
@@ -42,7 +43,8 @@ same login URL — no new one each time). This is a Phase-0 spike: it proves reg
   <code id="phoneurl"></code> — you should see <code>📦 recv</code> packets arrive here (proof the phone reaches this
   browser node over Tailscale). Replying to them = Phase 2.</p>
   <button id="derp">Connect DERP</button>
-  <div class="s" id="derplog" style="margin-top:.6rem;white-space:pre-wrap;max-height:14rem;overflow:auto"></div>
+  <button id="copylog" class="sec">Copy log</button>
+  <div class="s" id="derplog" style="margin-top:.6rem;white-space:pre-wrap;max-height:14rem;overflow:auto;-webkit-user-select:text;user-select:text"></div>
 </div>
 
 <script type="module">
@@ -113,12 +115,21 @@ async function boot(){
   try{await init()}catch(e){set('status','bad','WASM load failed: '+e);return}
   $('login').onclick=doLogin
   $('forget').onclick=()=>{forget_node();LS.removeItem('ts_auth_url');LS.removeItem('ts_ip');LS.removeItem('ts_authorized');location.reload()}
-  let derpStarted=false
+  let derpStarted=false, lastLog=''
   $('derp').onclick=()=>{
     if(derpStarted)return;derpStarted=true;$('derp').disabled=true
     connect_derp('derp1f.tailscale.com')  // loops; resolves only on disconnect
-    setInterval(()=>{const t=derp_log();if(t)$('derplog').textContent=t;$('derplog').scrollTop=1e9},1000)
+    // Only rewrite the DOM when the text actually changed — otherwise a 1 s overwrite
+    // keeps killing text selection on mobile (can't copy). Keep scroll only if at bottom.
+    setInterval(()=>{const t=derp_log();if(t&&t!==lastLog){lastLog=t;const e=$('derplog');const atBottom=e.scrollHeight-e.scrollTop-e.clientHeight<24;e.textContent=t;if(atBottom)e.scrollTop=1e9}},1000)
   }
+  async function copy(text,btn){
+    try{await navigator.clipboard.writeText(text);const o=btn.textContent;btn.textContent='Copied ✓';setTimeout(()=>btn.textContent=o,1200)}
+    catch(e){ // fallback: select the element so a long-press copy works
+      const r=document.createRange();r.selectNodeContents($('derplog'));const s=getSelection();s.removeAllRanges();s.addRange(r)}
+  }
+  $('copylog').onclick=()=>copy(derp_log(),$('copylog'))
+  $('copyurl').onclick=()=>copy($('authurl').href||'',$('copyurl'))
   // resume across refresh: same node keys persist in the WASM's localStorage
   if(LS.ts_authorized==='1'&&LS.ts_ip){
     set('status','ok','● online on your tailnet (cached) — re-verifying…')
