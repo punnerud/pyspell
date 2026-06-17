@@ -362,6 +362,9 @@ const PAGE: &str = r##"<!doctype html><html><head><meta charset=utf-8>
 *{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#0d1117;color:#e6edf3;height:100vh;display:flex;flex-direction:column}
 header{padding:6px 10px;background:#161b22;border-bottom:1px solid #30363d;display:flex;gap:8px;align-items:center;font-size:13px;flex-wrap:wrap}
 header a{color:#58a6ff;text-decoration:none}
+.badge{padding:2px 9px;border-radius:11px;background:#30363d;font-size:12px;white-space:nowrap}
+#settings{display:none;position:fixed;top:42px;right:10px;z-index:50;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px;width:min(320px,92vw);box-shadow:0 6px 24px #000a;font-size:13px}
+#settings label{display:block;margin-bottom:8px}#settings input{width:100%;padding:5px;margin-top:3px}
 main{flex:1;display:flex;min-height:0}
 .pane{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}.left{border-right:1px solid #30363d}
 .crow{flex-shrink:0}
@@ -376,13 +379,18 @@ button{background:#238636;color:#fff;border:0;border-radius:6px;padding:6px 12px
 <header><b>PySpell Agent</b>
 <select id=lang><option value=py>Python</option><option value=rs>Rust</option></select>
 <span style=flex:1></span>
-<span style=opacity:.6>no key → local offline model</span>
-<input id=key type=password placeholder="OpenAI key" size=12>
-<input id=model value=gpt-4o-mini size=10>
+<span id=backend class=badge title="which model answers — change under ⚙">● on-device model</span>
 <input id=wsearch placeholder="related words" size=9 onkeydown="if(event.key=='Enter')words(this.value)">
 <button class=sec onclick=verify()>Verify</button>
 <button class=sec onclick=clr()>Clear</button>
+<button class=sec onclick=gear() title="model settings — switch to OpenAI">⚙</button>
 <a href="https://punnerud.github.io/pyspell/" target=_blank>docs</a></header>
+<div id=settings>
+<div style="margin-bottom:6px"><b>Model backend</b></div>
+<div style="opacity:.7;margin-bottom:10px">Default is the <b>on-device offline model</b> (no internet). Add an OpenAI key to use GPT instead — it stays in this browser only.</div>
+<label>OpenAI key (optional)<input id=key type=password placeholder="sk-… leave empty for on-device" oninput="save();updBackend()"></label>
+<label>OpenAI model<input id=model value=gpt-4o-mini oninput="save();updBackend()"></label>
+<button class=sec onclick="$('settings').style.display='none'">Done</button></div>
 <main>
 <div class="pane left"><textarea id=code spellcheck=false></textarea>
 <div class=bar><button onclick=run()>Run</button><button class=sec onclick="ask('Improve this code')">Ask agent</button></div>
@@ -395,6 +403,12 @@ const $=id=>document.getElementById(id),LS=localStorage
 $('code').value=LS.ps_code||'free_heap > 100000'
 $('key').value=LS.ps_key||'';$('model').value=LS.ps_model||'gpt-4o-mini'
 let chat=JSON.parse(LS.ps_chat||'[]')
+function gear(){const s=$('settings');s.style.display=s.style.display=='block'?'none':'block'}
+// Reflect the active backend in the header badge: on-device by default, GPT if a key is set.
+function updBackend(){const k=$('key').value.trim(),b=$('backend')
+b.textContent=k?('● GPT · '+($('model').value.trim()||'gpt-4o-mini')):'● on-device model'
+b.style.color=k?'#e3b341':'#7ee787'}
+updBackend()
 function save(){LS.ps_code=$('code').value;LS.ps_key=$('key').value;LS.ps_model=$('model').value;LS.ps_chat=JSON.stringify(chat)}
 function render(){$('chat').innerHTML=chat.map(m=>'<div class="m '+(m.role=='user'?'u':'a')+'">'+(m.html||m.content.replace(/</g,'&lt;'))+'</div>').join('');$('chat').scrollTop=1e9}
 function he(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
@@ -430,8 +444,11 @@ try{const r=await fetch('/run?lang=py&timeout=2',{method:'POST',body:e});const t
 // Append the live result of message `i`'s snippet as a small green/red ▷ badge.
 async function evalInto(i,snip){const v=await autoEval(snip);if(v==null)return
 const err=/^error:/.test(v)
+// Keep the result OUT of .content — Apply/applyLast copy .content, so it must stay
+// the bare code. The ▷ result lives only in .html (display) + .eval (persisted).
+chat[i].eval=v
 chat[i].html=(chat[i].html||he(chat[i].content))+'<div style="margin-top:4px;font-family:ui-monospace,monospace;font-size:12px;color:'+(err?'#f85149':'#7ee787')+'" title="ran live in the pyspell sandbox — 2s, no network">▷ '+he(v)+'</div>'
-chat[i].content+='\n▷ '+v;render();save()}
+render();save()}
 render()
 async function run(){save();$('out').textContent='running...';try{const r=await fetch('/run?lang='+$('lang').value+'&timeout=20',{method:'POST',body:$('code').value});$('out').textContent=await r.text()}catch(e){$('out').textContent='error: '+e}}
 function sys(){return 'You are a coding assistant for PySpell: a sandboxed Python/Rust expression subset. Allowed: literals, arithmetic, comparisons, boolean, ternary, lists, strings, builtins (len,abs,min,max,sum,round,int,float,str), fetch_json(url,"a.b.0.c"), json_get, and free vars like free_heap, uptime_s. NOT allowed: def, loops, imports, assignment. Keep replies short; give a single PySpell expression when you give code.'}
