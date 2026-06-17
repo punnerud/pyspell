@@ -455,6 +455,18 @@ function genFastPath(instr){const op={'+':'+','-':'-','*':'*','/':'//','plus':'+
 let m=instr.match(/(-?\d+)\s*([+\-*\/])\s*(-?\d+)/);if(m)return 'print('+m[1]+' '+op[m[2]]+' '+m[3]+')'
 m=instr.match(/\b(add|subtract|multiply|divide|plus|minus|times)\b[^\d-]*(-?\d+)\D+?(-?\d+)/i);if(m&&op[m[1].toLowerCase()])return 'print('+m[2]+' '+op[m[1].toLowerCase()]+' '+m[3]+')'
 return null}
+// "largest/smallest of A and B" — pick a number, don't compute one. The model can't
+// copy long numbers (962 -> 92, 96215 -> 61), so the browser copies them verbatim into
+// max()/min() exactly like the arithmetic path. "greater THAN" is a comparison, skip it.
+function genMinMaxFastPath(t){
+if(/\bthan\b/i.test(t))return null
+const MAXW=/\b(largest|larger|large|biggest|bigger|greatest|greater|highest|higher|maximum|max|most)\b/i
+const MINW=/\b(smallest|smaller|small|least|lowest|lower|minimum|min|fewest|fewer)\b/i
+const isMax=MAXW.test(t),isMin=MINW.test(t)
+if(isMax===isMin)return null
+const nums=t.match(/-?\d+/g)
+if(!nums||nums.length<2)return null
+return 'print('+(isMax?'max':'min')+'('+nums.join(', ')+'))'}
 // Device commands are near-deterministic from the text, so the browser builds them
 // directly (100% reliable, and screen text is COPIED verbatim — the model can't
 // reproduce arbitrary strings). Mirrors genFastPath. Returns code or null.
@@ -516,7 +528,7 @@ $('msg').value='';chat.push({role:'user',content:text});render();save()
 if($('key').value){await openai()}else{
 const bad=await validate(text);if(bad.length){chat.push({role:'assistant',content:'⚠ outside the model vocabulary: '+bad.join(', ')+' — rephrase with common words.',html:'⚠ outside the model vocabulary: <b>'+bad.map(he).join(', ')+'</b> — rephrase with <a style="color:#58a6ff;cursor:pointer;text-decoration:underline" onclick=showVocab()>common words</a>.'});render()}
 if($('code').value.trim()&&/\b(change|rename|instead|replace|swap|make it|count down|upper bound|use the|delete|remove|move|put .* below|everywhere|all occurrences|uses of)\b/i.test(text)){await editLoop(text)}
-else{const fp=genFastPath(text)||genDeviceFastPath(text);if(fp){const j=chat.push({role:'assistant',content:fp+'  ⟨copied from your request⟩'})-1;render();save();await evalInto(j,fp)}else{await local(text)}}}}
+else{const fp=genFastPath(text)||genDeviceFastPath(text)||genMinMaxFastPath(text);if(fp){const j=chat.push({role:'assistant',content:fp+'  ⟨copied from your request⟩'})-1;render();save();await evalInto(j,fp)}else{await local(text)}}}}
 // Phase B: word dictionary + embeddings served from the dongle, for input validation
 // + related-word search (RAG over our OWN vocab — the same table the model thinks in).
 let _wm
