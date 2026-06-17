@@ -466,6 +466,19 @@ function genFastPath(instr){const op={'+':'+','-':'-','*':'*','/':'//','plus':'+
 let m=instr.match(/(-?\d+)\s*([+\-*\/])\s*(-?\d+)/);if(m)return 'print('+m[1]+' '+op[m[2]]+' '+m[3]+')'
 m=instr.match(/\b(add|subtract|multiply|divide|plus|minus|times)\b[^\d-]*(-?\d+)\D+?(-?\d+)/i);if(m&&op[m[1].toLowerCase()])return 'print('+m[2]+' '+op[m[1].toLowerCase()]+' '+m[3]+')'
 return null}
+// "largest/smallest of A and B" — pick a number, don't compute one. The model can't
+// copy long numbers (962 -> 92, 96215 -> 61), so the browser copies them verbatim into
+// max()/min() exactly like the arithmetic path. "greater THAN" is a comparison, skip it.
+function genMinMaxFastPath(t){
+  if(/\bthan\b/i.test(t))return null
+  const MAXW=/\b(largest|larger|large|biggest|bigger|greatest|greater|highest|higher|maximum|max|most)\b/i
+  const MINW=/\b(smallest|smaller|small|least|lowest|lower|minimum|min|fewest|fewer)\b/i
+  const isMax=MAXW.test(t),isMin=MINW.test(t)
+  if(isMax===isMin)return null            // need exactly one clear intent
+  const nums=t.match(/-?\d+/g)
+  if(!nums||nums.length<2)return null      // need at least two numbers to pick from
+  return 'print('+(isMax?'max':'min')+'('+nums.join(', ')+'))'
+}
 function _strArg(t){let m
 if(m=t.match(/"([^"]*)"/))return m[1]
 if(m=t.match(/\bmake\s+(.+?)\s+(?:upper ?case|lower ?case)\b/i))return m[1].trim()
@@ -532,7 +545,7 @@ function animate(r){const scr=$('scr'),led=$('led')
 async function runPrompt(text){
   if(!ready||!text.trim())return
   $('ostat')&&($('ostat').textContent='')
-  let code=genFastPath(text)||genDeviceFastPath(text), codeHtml
+  let code=genFastPath(text)||genDeviceFastPath(text)||genMinMaxFastPath(text), codeHtml
   if(code){codeHtml=he(code)+' <span style=opacity:.5>⟨copied verbatim⟩</span>'}
   else{
     // No deterministic fast-path → the model must understand the words. If some aren't in
