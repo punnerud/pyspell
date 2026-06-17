@@ -35,7 +35,10 @@
   .demo{max-width:56rem;margin:1.4rem auto 0;padding:0 1rem}
   .demowrap{display:flex;gap:1.4rem;align-items:flex-start;flex-wrap:wrap}
   .democol{flex:1;min-width:18rem}
-  #pin{width:100%;padding:.7rem .8rem;font-size:1.05rem;background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:9px}
+  .pinrow{display:flex;gap:.5rem;align-items:stretch}
+  #pin{flex:1;min-width:0;padding:.7rem .8rem;font-size:1.05rem;background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:9px}
+  #prun{flex:0 0 auto;padding:.7rem 1.1rem;font-size:1.02rem;font-weight:600;background:var(--ok);color:#06210f;border:0;border-radius:9px;cursor:pointer}
+  #prun:disabled{background:var(--bd);color:var(--mut);cursor:default}
   .hint{color:var(--mut);font-size:.85rem;margin:.4rem 0}
   .out{background:var(--code);border:1px solid var(--bd);border-radius:9px;padding:.8rem;margin-top:.7rem;font-family:ui-monospace,Menlo,monospace;font-size:.95rem;min-height:2.2rem;white-space:pre-wrap;word-break:break-word}
   .out .lbl{color:var(--mut);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em}
@@ -77,7 +80,10 @@
   <p class="hint" style="text-align:center">No install, no device, no cloud. The same ~0.5&nbsp;MB model + sandbox that runs on the ESP32, loaded here as WebAssembly. Type plain English; it writes Python and runs it.</p>
   <div class="demowrap">
     <div class="democol">
-      <input id=pin placeholder="loading model…" disabled autocomplete=off spellcheck=false>
+      <div class="pinrow">
+        <input id=pin placeholder="loading model…" disabled autocomplete=off spellcheck=false>
+        <button id=prun disabled title="Run">Run ▶</button>
+      </div>
       <div class="exs" id=exs></div>
       <div class="out" id=oout><span class="lbl">output</span><br><span id=ostat>loading the model (~0.5 MB)…</span></div>
     </div>
@@ -554,6 +560,7 @@ async function boot(){
     ready=true
     const pin=$('pin');pin.disabled=false;pin.placeholder='Ask in English… e.g. "what is 7 plus 5"'
     pin.onkeydown=e=>{if(e.key==='Enter')runPrompt(pin.value)}
+    const prun=$('prun');prun.disabled=false;prun.onclick=()=>runPrompt(pin.value)
     renderExamples()
     pin.value='turn the led on'
     await runPrompt('turn the led on')   // show it working immediately
