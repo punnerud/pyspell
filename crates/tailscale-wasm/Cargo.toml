@@ -27,6 +27,8 @@ x25519-dalek = { version = "2", default-features = false, features = ["static_se
 # NaCl box for the DERP ClientInfo seal (same config as tailscale-core).
 crypto_box = { version = "0.9", default-features = false, features = ["salsa20", "alloc"] }
 tailscale-core = { path = "../../demo/esp32-tailscale-pyspell/core" }
+# So the browser node actually SERVES PySpell over the tunnel (the simulated ESP32).
+pyspell-core = { path = "../pyspell-core", default-features = false }
 
 [dependencies.web-sys]
 version = "0.3"
