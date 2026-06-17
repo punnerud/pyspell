@@ -76,6 +76,44 @@ fn run_pyspell(code: &str) -> String {
         Err(e) => format!("error: {e}"),
     }
 }
+/// Minimal URL-decode (percent-escapes + `+` → space) for the `?code=` query.
+fn url_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    let hv = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    while i < b.len() {
+        match b[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < b.len() => match (hv(b[i + 1]), hv(b[i + 2])) {
+                (Some(h), Some(l)) => {
+                    out.push((h << 4) | l);
+                    i += 3;
+                }
+                _ => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// In-tunnel HTTP routes the browser node serves to tailnet peers (your phone).
 fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<tcp::HttpReply> {
     let _ = method;
@@ -85,14 +123,19 @@ fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<tcp::Http
             let code = if !body.is_empty() {
                 String::from_utf8_lossy(body).into_owned()
             } else {
-                // allow ?code=... too
+                // GET /run?code=... (URL-decoded) — so you can test from a browser bar.
                 query
                     .split('&')
                     .find_map(|kv| kv.strip_prefix("code="))
-                    .map(|s| s.replace('+', " "))
+                    .map(url_decode)
                     .unwrap_or_default()
             };
-            Some(tcp::HttpReply::ok_owned("text/plain; charset=utf-8", run_pyspell(&code).into_bytes()))
+            let out = if code.trim().is_empty() {
+                "usage: POST a program, or GET /run?code=21*2  (e.g. max([3,9,5]))".to_string()
+            } else {
+                run_pyspell(&code)
+            };
+            Some(tcp::HttpReply::ok_owned("text/plain; charset=utf-8", out.into_bytes()))
         }
         _ => None,
     }
