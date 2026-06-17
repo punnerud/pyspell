@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PySpell — Tailnet browser-transport probe</title>
+<style>
+  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#0d1117;color:#e6edf3;line-height:1.5;padding:1.5rem;max-width:48rem;margin:0 auto}
+  h1{font-size:1.4rem}
+  p{color:#9da7b3}
+  .row{border:1px solid #30363d;border-radius:9px;padding:.8rem 1rem;margin:.7rem 0;background:#161b22}
+  .row b{display:block}
+  .s{font-family:ui-monospace,Menlo,monospace;font-size:.9rem;white-space:pre-wrap;word-break:break-word;margin-top:.3rem}
+  .ok{color:#3fb950}.bad{color:#f85149}.pend{color:#e3b341}
+  code{background:#1f2630;padding:.1em .4em;border-radius:5px}
+  a{color:#58a6ff}
+</style>
+</head>
+<body>
+<h1>Tailnet browser-transport probe</h1>
+<p>This answers the one gating question for running our Rust Tailscale node in the browser:
+<b>can a browser on this origin (<span id=org></span>) even reach Tailscale's control server and a DERP relay?</b>
+Open this from the real target origin (e.g. <code>https://punnerud.github.io/pyspell/web/tailnet-probe.html</code>) — origin policy differs per host. No login or keys needed; it only tries to <em>connect</em>.</p>
+
+<div class="row" id="r-key"><b>1. <code>GET /key</code> over HTTPS fetch (CORS?)</b><div class="s pend" id="s-key">testing…</div></div>
+<div class="row" id="r-ctl"><b>2. WebSocket to <code>controlplane.tailscale.com/ts2021</code></b><div class="s pend" id="s-ctl">testing…</div></div>
+<div class="row" id="r-derp"><b>3. WebSocket to a DERP relay (<code>derp1f.tailscale.com</code>)</b><div class="s pend" id="s-derp">testing…</div></div>
+
+<div class="row"><b>Verdict</b><div class="s pend" id="verdict">running…</div></div>
+<p>Copy the four lines above back to me. If (2) and (3) connect, the browser-tailnet node is viable; if they're blocked by origin/CORS, we'll need a different transport (e.g. serving the page from a Tailscale-Serve origin or a tiny relay).</p>
+
+<script>
+const $=id=>document.getElementById(id)
+$('org').textContent=location.origin
+const set=(id,cls,msg)=>{const e=$(id);e.className='s '+cls;e.textContent=msg}
+let keyOk=false,ctlOk=false,derpOk=false,done=0
+function finish(){if(++done<3)return
+  const v=$('verdict')
+  if(ctlOk&&derpOk){v.className='s ok';v.textContent='GO — the browser can reach control + DERP from this origin. Worth building the Rust WS transport.'}
+  else{v.className='s bad';v.textContent='BLOCKED — '+(!ctlOk?'control WS rejected. ':'')+(!derpOk?'DERP WS rejected. ':'')+'A public-origin browser node may not be possible without a relay / Tailscale-Serve origin.'}
+}
+
+// 1. /key over fetch — does the control server send CORS headers to a browser?
+//    (informational — not counted in the GO/BLOCKED verdict, which is WS-only.)
+;(()=>{let st=''
+fetch('https://controlplane.tailscale.com/key?v=130',{cache:'no-store'})
+  .then(r=>{st=r.status;return r.text()})
+  .then(t=>{keyOk=true;set('s-key','ok','OK '+st+': '+t.slice(0,90))})
+  .catch(e=>{set('s-key','bad','blocked: '+e+' (likely CORS — needs Access-Control-Allow-Origin)')})
+})()
+
+// 2 + 3: WebSocket connect attempts. We only care whether onopen fires (server accepts
+// the handshake from this Origin) vs onerror/onclose with no open.
+function probeWS(url,sid,setflag){
+  let opened=false
+  try{
+    const ws=new WebSocket(url)
+    const t=setTimeout(()=>{if(!opened){set(sid,'bad','timeout — no open in 8s');try{ws.close()}catch(_){}finish()}},8000)
+    ws.onopen=()=>{opened=true;setflag(true);clearTimeout(t);set(sid,'ok','CONNECTED (server accepted the WS handshake from this origin)');ws.close();finish()}
+    ws.onerror=()=>{if(!opened){/* error fires before close; let close report */}}
+    ws.onclose=ev=>{if(!opened){clearTimeout(t);set(sid,'bad','closed without opening — code '+ev.code+(ev.reason?' '+ev.reason:'')+' (origin/handshake rejected, or needs a subprotocol)');finish()}}
+  }catch(e){set(sid,'bad','threw: '+e);finish()}
+}
+probeWS('wss://controlplane.tailscale.com/ts2021','s-ctl',v=>ctlOk=v)
+probeWS('wss://derp1f.tailscale.com/derp','s-derp',v=>derpOk=v)
+</script>
+</body>
+</html>
