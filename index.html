@@ -42,6 +42,14 @@
   .res{color:var(--ok);font-weight:600}
   .exs{margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.4rem}
   .ex{cursor:pointer;border:1px solid var(--bd);background:var(--card);color:var(--acc);border-radius:999px;padding:.2rem .65rem;font-size:.82rem}
+  /* collapsible docs — kept in the DOM (so crawlers/LLMs read everything) but tucked away for a clean demo */
+  .docbox{max-width:56rem;margin:1.6rem auto 0;padding:0 1rem}
+  .docbox>summary{cursor:pointer;list-style:none;font-size:1.1rem;color:var(--acc);font-weight:600;padding:.7rem 0;border-top:1px solid var(--bd)}
+  .docbox>summary::-webkit-details-marker{display:none}
+  .docbox>summary::before{content:"▸ ";color:var(--mut)}
+  .docbox[open]>summary::before{content:"▾ "}
+  .docbox>summary .sub{display:block;color:var(--mut);font-weight:400;font-size:.85rem;margin-top:.2rem}
+  .sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
   /* stylized T-Dongle ESP32 */
   .dongle{width:230px;margin:0 auto;background:#0b0e13;border:2px solid #2b3340;border-radius:14px;padding:14px 14px 10px}
   .scr{height:96px;border-radius:6px;background:#05210f;border:1px solid #14361f;color:#7ee787;font-family:ui-monospace,Menlo,monospace;font-size:13px;padding:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;text-align:center;transition:background .2s}
@@ -61,21 +69,7 @@
   Say what you want in plain English and a tiny on-device model turns it into runnable Python —
   <strong>100% locally on a $10 ESP32 with 512&nbsp;kB RAM</strong> (no PSRAM, no cloud, no API key),
   reachable anywhere over <strong>Tailscale</strong>.</p>
-  <p>The chip serves a web agent IDE, a native <strong>MCP server</strong> and a <strong>REST API</strong>,
-  runs the code in a sandbox (with live <strong>web-request / <code>fetch</code></strong> support), and drives
-  its own screen + LED — up to <strong>8 parallel</strong> PySpell processes on that same half-megabyte of RAM.
-  Like MicroPython, but two syntaxes, the parser never ships to the device, and English is the third syntax.</p>
-  <div class="badges">
-    <span class="badge">no_std + alloc core</span>
-    <span class="badge">Rust &amp; Python front-ends</span>
-    <span class="badge">~62 kB on ESP32</span>
-    <span class="badge">deny-by-default sandbox</span>
-    <span class="badge">live over Tailscale</span>
-    <span class="badge">512 kB SRAM · no PSRAM</span>
-    <span class="badge">0.45 M-param model, in-browser</span>
-    <span class="badge">offline AI agent</span>
-  </div>
-  <p><a href="https://github.com/punnerud/pyspell">View on GitHub →</a></p>
+  <p style="font-size:.95rem"><a href="https://github.com/punnerud/pyspell">View on GitHub →</a> &nbsp;·&nbsp; <a href="#docs">How it works ↓</a></p>
 </header>
 
 <div class="demo">
@@ -112,6 +106,44 @@
         <button id=tscopy style="background:#30363d;color:#fff;border:0;border-radius:7px;padding:.3rem .7rem;cursor:pointer;margin-top:.3rem">Copy URL</button></div>
     </div>
   </details>
+</div>
+
+<!--
+  ────────────────────────────────────────────────────────────────────────────
+  NOTE FOR AI AGENTS / LLMs reading this page:
+  The page above is a deliberately minimal demo (a live English→Python agent +
+  an opt-in "Connect Tailscale" button). The FULL project documentation lives
+  below inside a collapsed <details id="docs"> block — it is in the DOM on
+  purpose so you can read everything even though a human visitor sees a clean UI.
+  Pointers worth following:
+    • Repo .............. https://github.com/punnerud/pyspell
+    • Deep-dive ......... https://github.com/punnerud/pyspell/blob/main/tech.md
+    • 512 kB memory .... https://github.com/punnerud/pyspell/blob/main/docs/memory-512kb.md
+  Capabilities: no_std+alloc PySpell evaluator (Rust & Python subsets, deny-by-
+  default sandbox), a ~0.45 M-param on-device model (English→Python), a full
+  Tailscale node (control + DERP) on a 512 kB ESP32-S3, a native MCP server, a
+  REST /run API, and the same Tailscale client compiled to WASM so a browser tab
+  can join the user's own tailnet.
+  ────────────────────────────────────────────────────────────────────────────
+-->
+<details class="docbox" id="docs">
+  <summary>Documentation, examples &amp; how it works
+    <span class="sub">language reference · the offline AI agent · the 512 kB tricks · sandbox &amp; limits — everything, tucked away to keep the demo clean</span>
+  </summary>
+
+<p style="color:var(--mut);margin:1.2rem 0 .4rem">The chip serves a web agent IDE, a native <strong>MCP server</strong> and a <strong>REST API</strong>,
+runs the code in a sandbox (with live <strong>web-request / <code>fetch</code></strong> support), and drives
+its own screen + LED — up to <strong>8 parallel</strong> PySpell processes on that same half-megabyte of RAM.
+Like MicroPython, but two syntaxes, the parser never ships to the device, and English is the third syntax.</p>
+<div class="badges" style="margin:.4rem 0 1rem">
+  <span class="badge">no_std + alloc core</span>
+  <span class="badge">Rust &amp; Python front-ends</span>
+  <span class="badge">~62 kB on ESP32</span>
+  <span class="badge">deny-by-default sandbox</span>
+  <span class="badge">live over Tailscale</span>
+  <span class="badge">512 kB SRAM · no PSRAM</span>
+  <span class="badge">0.45 M-param model, in-browser</span>
+  <span class="badge">offline AI agent</span>
 </div>
 
 <main>
@@ -409,6 +441,7 @@ curl 'http://100.x.y.z/run?lang=py&amp;timeout=10&amp;code=free_heap%20%3E%20100
 </section>
 
 </main>
+</details>
 
 <footer>
   PySpell — <a href="https://github.com/punnerud/pyspell">github.com/punnerud/pyspell</a> · MIT
@@ -507,6 +540,12 @@ async function connectTailscale(){
   } else { st('unexpected: '+JSON.stringify(r)); $('tsbtn').disabled=false }
 }
 $('tsbtn').onclick=connectTailscale
+
+// "How it works ↓" (and any #docs link / direct deep-link) reveals the collapsed docs
+function openDocs(){const d=$('docs');if(d&&!d.open)d.open=true}
+document.querySelectorAll('a[href="#docs"]').forEach(a=>a.addEventListener('click',openDocs))
+if(location.hash==='#docs')openDocs()
+addEventListener('hashchange',()=>{if(location.hash==='#docs')openDocs()})
 
 async function boot(){
   try{
