@@ -37,9 +37,15 @@ def _list():
     return [random.randint(1, 20) for _ in range(k)]
 
 
-def gen_example():
-    """Return one (en, py) pair from a randomly chosen template family."""
-    fam = random.randint(0, 14)
+# Families that the model struggles with most (from eval.py): list aggregations,
+# function defs, countdown loops. curate.py can oversample these.
+WEAK_FAMILIES = [4, 6, 7, 10]
+
+
+def gen_example(fam=None):
+    """Return one (en, py) pair from a template family (random, or a forced `fam`)."""
+    if fam is None:
+        fam = random.randint(0, 14)
     if fam == 0:
         w = _word()
         en = random.choice([f"print {w}", f"say {w}", f"output the word {w}", f"display {w}"])
