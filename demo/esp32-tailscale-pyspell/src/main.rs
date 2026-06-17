@@ -48,6 +48,10 @@ mod ui;
 mod pyspell_web;
 #[cfg(feature = "pyspell")]
 mod net;
+// Serves the packed model image (tokenizer + v2 int8 weights) from the `model`
+// flash partition, streamed off flash (+ HTTP Range) so the browser runs it offline.
+#[cfg(feature = "pyspell")]
+mod model_host;
 // Local-LAN parallel PySpell: worker-pool HTTP server on the WiFi IP (the in-tunnel
 // server stays single-connection). Uses the demo's heap headroom for concurrency.
 #[cfg(feature = "pyspell")]
