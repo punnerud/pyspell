@@ -29,13 +29,57 @@ def _name():
 
 
 def _word():
-    return random.choice(["hello", "world", "cat", "dog", "Lily", "Tom", "apple", "tree", "sun", "code", "Python", "robot"])
+    # Short, programming/device-leaning strings for print("…")/show("…"). (Toy
+    # animals dropped — this model is for ESP32 programming, not pet names.)
+    return random.choice(["hello", "world", "Python", "code", "robot", "star",
+                          "light", "hi", "done", "ok", "yes", "no"])
+
+
+def _color():
+    return random.choice(["red", "green", "blue", "yellow", "white", "orange",
+                          "purple", "pink"])
+
+
+def _sentence():
+    # A short multi-word phrase for show("…") on the screen.
+    return random.choice([
+        "hello world", "hei og hopp", "good morning", "press the button",
+        "well done", "made with pyspell", "ESP32 says hi", "keep going",
+        "good job", "see you", "stay cool", "let us code", "high five",
+    ])
+
+
+def _aug(en):
+    """Cheap natural-phrasing augmentation: wrap the bare template instruction with an
+    optional politeness/imperative prefix so the model sees the many ways real people
+    phrase the same request (not just the canonical template). Multiplies unique
+    phrasings several-fold, which matters because device families have few base forms."""
+    r = random.random()
+    if r < 0.10:
+        return "please " + en
+    if r < 0.18:
+        return "can you " + en
+    if r < 0.24:
+        return "could you " + en
+    if r < 0.29:
+        return en + " please"
+    if r < 0.34:
+        return "i want to " + en
+    if r < 0.38:
+        return "i need to " + en
+    return en
 
 
 def _list():
     k = random.randint(2, 5)
     return [random.randint(1, 20) for _ in range(k)]
 
+
+# Highest family index (families 0..N_FAM inclusive). 22-26 are the device families
+# (screen + LED) that run live on the ESP32.
+N_FAM = 26
+# Device-action families (run live on hardware) — curate.py can oversample these.
+DEVICE_FAMILIES = [22, 23, 24, 25, 26]
 
 # Families that the model struggles with most (from eval.py): list aggregations,
 # function defs, countdown loops. curate.py can oversample these.
@@ -45,7 +89,7 @@ WEAK_FAMILIES = [4, 6, 7, 10]
 def gen_example(fam=None):
     """Return one (en, py) pair from a template family (random, or a forced `fam`)."""
     if fam is None:
-        fam = random.randint(0, 21)
+        fam = random.randint(0, N_FAM)
     if fam == 0:
         w = _word()
         en = random.choice([f"print {w}", f"say {w}", f"output the word {w}", f"display {w}"])
@@ -80,11 +124,12 @@ def gen_example(fam=None):
         fn, verb = random.choice([("max", "largest"), ("min", "smallest"), ("len", "length")])
         en = random.choice([f"find the {verb} of {lst}", f"the {verb} in {lst}"])
         py = f"print({fn}({lst}))"
-    elif fam == 8:
+    elif fam == 8:  # upper/lower — function form (pyspell can't parse .upper())
         w = _word()
-        meth, verb = random.choice([("upper", "uppercase"), ("lower", "lowercase")])
-        en = random.choice([f"{verb} the word {w}", f"make {w} {verb}"])
-        py = f'print("{w}".{meth}())'
+        fn, verb = random.choice([("upper", "uppercase"), ("lower", "lowercase")])
+        en = random.choice([f"{verb} the word {w}", f"make {w} {verb}", f'{verb} "{w}"',
+                            f"convert {w} to {verb}", f"make the word {w} {verb}"])
+        py = f'print({fn}("{w}"))'
     elif fam == 9:
         a, b = _int(), _int()
         en = random.choice([f"if {a} is greater than {b} print yes", f"check if {a} is bigger than {b}"])
@@ -106,10 +151,12 @@ def gen_example(fam=None):
         a = _int()
         en = random.choice([f"check if {a} is even", f"is {a} even or odd"])
         py = f"print(\"even\" if {a} % 2 == 0 else \"odd\")"
-    elif fam == 14:
+    elif fam == 14:  # reverse — function form (pyspell can't parse [::-1])
         w = _word()
-        en = random.choice([f"reverse the word {w}", f"print {w} backwards"])
-        py = f'print("{w}"[::-1])'
+        en = random.choice([f"reverse the word {w}", f"print {w} backwards", f'reverse "{w}"',
+                            f"flip the word {w}", f"reverse the text {w}", f"flip {w} around",
+                            f"reverse {w}"])
+        py = f'print(reverse("{w}"))'
     elif fam == 15:  # percent
         a, p = _int(5, 95), random.choice([10, 15, 20, 25, 50])
         en = random.choice([f"what is {p}% of {a}", f"{p} percent of {a}"])
@@ -135,11 +182,52 @@ def gen_example(fam=None):
         fn, verb = random.choice([("max", "larger"), ("min", "smaller")])
         en = random.choice([f"the {verb} of {a} and {b}", f"which is {verb}, {a} or {b}"])
         py = f"print({fn}({a}, {b}))"
-    else:  # fam 21 — multi-step
+    elif fam == 21:  # multi-step arithmetic
         a, b = _int(1, 20), _int(1, 20)
-        en = random.choice([f"add {a} and {b} then double it", f"double the sum of {a} and {b}"])
+        en = random.choice([f"add {a} and {b} then double it", f"double the sum of {a} and {b}",
+                            f"sum {a} and {b} and multiply by two"])
         py = f"print(({a} + {b}) * 2)"
-    return en, py
+    # ---- device families: these RUN LIVE on the ESP32 (screen + LED) ----
+    elif fam == 22:  # show text on the screen
+        s = _sentence() if random.random() < 0.55 else _word()
+        en = random.choice([f'show the text "{s}"', f'display "{s}" on the screen',
+                            f'put "{s}" on the display', f'write "{s}" on the screen',
+                            f'show "{s}"', f'print "{s}" on the screen',
+                            f'show me "{s}"', f'put the text "{s}" up', f'display "{s}"'])
+        py = f'show("{s}")'
+    elif fam == 23:  # LED on / off
+        if random.random() < 0.5:
+            en = random.choice(["turn the led on", "turn on the light", "light on",
+                                "switch the led on", "led on", "turn the light on",
+                                "switch on the light", "power on the led", "enable the led",
+                                "light it up", "turn on the led"])
+            py = "led(1)"
+        else:
+            en = random.choice(["turn the led off", "turn off the light", "light off",
+                                "switch the led off", "led off", "turn the light off",
+                                "switch off the light", "power off the led", "disable the led",
+                                "shut the light off", "turn off the led"])
+            py = "led(0)"
+    elif fam == 24:  # LED colour
+        c = _color()
+        en = random.choice([f"make the light {c}", f"set the led to {c}", f"turn the led {c}",
+                            f"make the led {c}", f"{c} light", f"change the led to {c}",
+                            f"color the led {c}", f"set the light to {c}", f"make it {c}",
+                            f"light up {c}", f"turn the light {c}"])
+        py = f'led("{c}")'
+    elif fam == 25:  # flash / blink the LED
+        en = random.choice(["flash the light", "flash the led", "blink the led", "blink the light",
+                            "make the led blink", "blink it", "flash it", "make the light flash",
+                            "flash the led a few times", "blink the led please", "flash the lamp"])
+        py = "flash()"
+    else:  # fam 26 — show device info on the screen
+        which, var = random.choice([("free memory", "free_heap"), ("free heap", "free_heap"),
+                                    ("memory", "free_heap"), ("uptime", "uptime_s"),
+                                    ("seconds since boot", "uptime_s"), ("time since boot", "uptime_s")])
+        en = random.choice([f"show the {which}", f"display the {which}", f"put the {which} on the screen",
+                            f"how much {which} is there", f"what is the {which}", f"check the {which}"])
+        py = f"show({var})"
+    return _aug(en), py
 
 
 # Math families (for curate --boost and eval grouping).

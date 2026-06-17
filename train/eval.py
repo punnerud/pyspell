@@ -177,7 +177,7 @@ def eval_harvest(model, tk, device, n, seed, out_dir, conf_thr=0.5):
     random.seed(seed)
     fam_conf, fam_fail, hard = {}, {}, []
     for _ in range(n):
-        fam = random.randint(0, 21)
+        fam = random.randint(0, gen_data.N_FAM)
         en, py = gen_data.gen_example(fam)
         text, pieces, confs = generate_scored(model, tk, device, en, max_new=64)
         in_str, in_brk, nl = False, 0, []
