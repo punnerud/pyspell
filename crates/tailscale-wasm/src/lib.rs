@@ -29,8 +29,12 @@ fn now_ms() -> u64 {
     js_sys::Date::now() as u64
 }
 
-// --- Phase 2: serve PySpell over the tunnel (the simulated ESP32) ------------
-static NODE_PAGE: &[u8] = b"<!doctype html><meta charset=utf-8><title>PySpell \xc2\xb7 your browser ESP32</title><body style='margin:0;font-family:system-ui;background:#0d1117;color:#e6edf3;padding:1.4rem;line-height:1.5'><h2>\xf0\x9f\xa7\xaa Hello from your browser-simulated ESP32</h2><p>This page is served by a PySpell node running in <b>another browser tab on your tailnet</b> \xe2\x80\x94 reached over Tailscale (control + DERP + WireGuard, all WebAssembly, ~150&nbsp;kB). Try the API:</p><pre style='background:#161b22;border:1px solid #30363d;border-radius:8px;padding:.8rem'>curl http://&lt;this-node&gt;/run -d '21*2'   # =&gt; 42\ncurl http://&lt;this-node&gt;/run -d 'max([3,9,5])'</pre></body>";
+// --- Phase 3: serve the full LLM + stylized-ESP32 demo over the tunnel -------
+// The mobile page (runs in the visitor's browser) does the deterministic fast-paths in
+// JS (arithmetic/device/quoted/string), POSTs the resulting Python to /eval; for anything
+// else it asks the on-node tiny LLM via /ask. Both return JSON {py,result,show,led,flash}
+// that drives the stylized ESP32 (screen + LED).
+static MOBILE_PAGE: &str = include_str!("node_page.html");
 
 fn render_value(v: &pyspell_core::Value) -> String {
     use pyspell_core::Value;
@@ -52,29 +56,175 @@ fn render_value(v: &pyspell_core::Value) -> String {
         }
     }
 }
-fn run_pyspell(code: &str) -> String {
-    use pyspell_core::{eval, parse, Lang, Limits};
-    let code = code.trim();
-    if code.is_empty() {
-        return "error: empty program".into();
+
+/// Capture show()/led()/flash() side effects so the page can animate the ESP32.
+struct NodeCaps {
+    show: RefCell<Option<String>>,
+    led: RefCell<Option<String>>,
+    flash: RefCell<bool>,
+}
+impl pyspell_core::Display for NodeCaps {
+    fn show(&self, text: &str) -> Result<(), pyspell_core::DslError> {
+        *self.show.borrow_mut() = Some(text.to_string());
+        Ok(())
     }
-    let prog = match parse(code, Lang::Python) {
-        Ok(p) => p,
-        Err(e) => return format!("error: {e}"),
+}
+impl pyspell_core::Actuator for NodeCaps {
+    fn led(&self, on: bool, color: Option<(u8, u8, u8)>) -> Result<(), pyspell_core::DslError> {
+        *self.led.borrow_mut() = Some(if !on {
+            "off".into()
+        } else {
+            match color {
+                Some((r, g, b)) => format!("#{r:02x}{g:02x}{b:02x}"),
+                None => "white".into(),
+            }
+        });
+        Ok(())
+    }
+    fn flash(&self) -> Result<(), pyspell_core::DslError> {
+        *self.flash.borrow_mut() = true;
+        Ok(())
+    }
+}
+
+fn jstr(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 2);
+    o.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// Evaluate `py` with capability capture → JSON `{py,result,show,led,flash}`.
+fn eval_json(py: &str) -> String {
+    use pyspell_core::{eval, parse, Lang, Limits};
+    let py = py.trim();
+    let caps = NodeCaps { show: RefCell::new(None), led: RefCell::new(None), flash: RefCell::new(false) };
+    let result = if py.is_empty() {
+        "error: empty program".to_string()
+    } else {
+        match parse(py, Lang::Python) {
+            Ok(prog) => {
+                let env = |_: &str| None::<pyspell_core::Value>;
+                let limits = Limits {
+                    max_steps: 1_000_000,
+                    max_bytes: 131_072,
+                    deadline: None,
+                    net: None,
+                    display: Some(&caps),
+                    actuator: Some(&caps),
+                };
+                match eval::run_with(&prog, &env, limits) {
+                    Ok(v) => render_value(&v),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+            Err(e) => format!("error: {e}"),
+        }
     };
-    let env = |_: &str| None::<pyspell_core::Value>;
-    let limits = Limits {
-        max_steps: 1_000_000,
-        max_bytes: 131_072,
-        deadline: None,
-        net: None,
-        display: None,
-        actuator: None,
-    };
-    match eval::run_with(&prog, &env, limits) {
-        Ok(v) => render_value(&v),
+    let showj = caps.show.borrow().as_deref().map(jstr).unwrap_or_else(|| "null".into());
+    let ledj = caps.led.borrow().as_deref().map(jstr).unwrap_or_else(|| "null".into());
+    format!(
+        "{{\"py\":{},\"result\":{},\"show\":{},\"led\":{},\"flash\":{}}}",
+        jstr(py),
+        jstr(&result),
+        showj,
+        ledj,
+        *caps.flash.borrow()
+    )
+}
+
+/// Plain-text eval (for /run + curl): the result string only.
+fn run_plain(code: &str) -> String {
+    use pyspell_core::{eval, parse, Lang, Limits};
+    let c = code.trim();
+    if c.is_empty() {
+        return "usage: POST a program, or GET /run?code=21*2  (e.g. max([3,9,5]))".into();
+    }
+    match parse(c, Lang::Python) {
+        Ok(p) => {
+            let env = |_: &str| None::<pyspell_core::Value>;
+            let lim = Limits {
+                max_steps: 1_000_000,
+                max_bytes: 131_072,
+                deadline: None,
+                net: None,
+                display: None,
+                actuator: None,
+            };
+            match eval::run_with(&p, &env, lim) {
+                Ok(v) => render_value(&v),
+                Err(e) => format!("error: {e}"),
+            }
+        }
         Err(e) => format!("error: {e}"),
     }
+}
+
+// On-node tiny LLM (English -> Python). Model + tokenizer bytes set once from JS.
+thread_local! {
+    static NODE_MODEL: RefCell<Option<(Vec<u8>, Vec<u8>)>> = const { RefCell::new(None) };
+}
+/// Install the model + tokenizer bytes so /ask can do English -> Python on the node.
+#[wasm_bindgen]
+pub fn set_model(model: Vec<u8>, tokenizer: Vec<u8>) {
+    NODE_MODEL.with(|m| *m.borrow_mut() = Some((model, tokenizer)));
+}
+/// English -> Python via the tiny LLM (greedy), or "" if no model is loaded.
+fn node_generate(english: &str) -> String {
+    use tinyllm::tokenizer::{BOS, EOS};
+    use tinyllm::{RunState, Sampler, Tokenizer, Transformer};
+    NODE_MODEL.with(|m| {
+        let g = m.borrow();
+        let Some((model, tok)) = g.as_ref() else { return String::new() };
+        let t = match Transformer::new(model) {
+            Ok(t) => t,
+            Err(_) => return String::new(),
+        };
+        let cfg = *t.config();
+        let tk = match Tokenizer::from_bytes(tok, cfg.vocab_size) {
+            Ok(x) => x,
+            Err(_) => return String::new(),
+        };
+        let pt = tk.encode(english, true, false);
+        if pt.is_empty() {
+            return String::new();
+        }
+        let mut st = RunState::new(&cfg); // f32 cache — the browser has the RAM
+        let max = (pt.len() + 24).min(cfg.seq_len);
+        let mut sampler = Sampler::new(cfg.vocab_size, 0.0, 0.9, 1); // greedy
+        let mut token = pt[0];
+        let mut pos = 0usize;
+        let mut out = String::new();
+        while pos < max {
+            t.forward(&mut st, token, pos);
+            let next = if pos + 1 < pt.len() {
+                pt[pos + 1]
+            } else {
+                let mut l = st.logits().to_vec();
+                sampler.sample(&mut l)
+            };
+            pos += 1;
+            if next == BOS || next == EOS {
+                break;
+            }
+            if pos >= pt.len() {
+                out.push_str(&String::from_utf8_lossy(&tk.decode(token, next)));
+            }
+            token = next;
+        }
+        out
+    })
 }
 /// Minimal URL-decode (percent-escapes + `+` → space) for the `?code=` query.
 fn url_decode(s: &str) -> String {
@@ -114,27 +264,50 @@ fn url_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// In-tunnel HTTP routes the browser node serves to tailnet peers (your phone).
+fn query_get(query: &str, key: &str) -> String {
+    let pat = format!("{key}=");
+    query.split('&').find_map(|kv| kv.strip_prefix(&pat)).map(url_decode).unwrap_or_default()
+}
+
+/// In-tunnel HTTP routes the browser node serves to tailnet peers (your phone):
+///  /        the stylized-ESP32 + input page (runs the fast-paths in the visitor's browser)
+///  /eval    POST Python (or ?code=) → JSON {py,result,show,led,flash}
+///  /ask     GET ?q=<english> → on-node tiny LLM → Python → eval → same JSON
+///  /run     plain-text result (kept for curl)
 fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<tcp::HttpReply> {
     let _ = method;
+    let body_or_code = || -> String {
+        if !body.is_empty() {
+            String::from_utf8_lossy(body).into_owned()
+        } else {
+            query_get(query, "code")
+        }
+    };
     match path {
-        "/" => Some(tcp::HttpReply::ok_owned("text/html; charset=utf-8", NODE_PAGE.to_vec())),
+        "/" => Some(tcp::HttpReply::ok_owned("text/html; charset=utf-8", MOBILE_PAGE.as_bytes().to_vec())),
+        "/eval" => {
+            Some(tcp::HttpReply::ok_owned("application/json", eval_json(&body_or_code()).into_bytes()))
+        }
+        "/ask" => {
+            let english = {
+                let q = query_get(query, "q");
+                if q.is_empty() {
+                    String::from_utf8_lossy(body).into_owned()
+                } else {
+                    q
+                }
+            };
+            let py = node_generate(english.trim());
+            let json = if py.trim().is_empty() {
+                "{\"py\":\"\",\"result\":\"(no model loaded — open tailnet.html first)\",\"show\":null,\"led\":null,\"flash\":false}".to_string()
+            } else {
+                eval_json(&py)
+            };
+            Some(tcp::HttpReply::ok_owned("application/json", json.into_bytes()))
+        }
         "/run" => {
-            let code = if !body.is_empty() {
-                String::from_utf8_lossy(body).into_owned()
-            } else {
-                // GET /run?code=... (URL-decoded) — so you can test from a browser bar.
-                query
-                    .split('&')
-                    .find_map(|kv| kv.strip_prefix("code="))
-                    .map(url_decode)
-                    .unwrap_or_default()
-            };
-            let out = if code.trim().is_empty() {
-                "usage: POST a program, or GET /run?code=21*2  (e.g. max([3,9,5]))".to_string()
-            } else {
-                run_pyspell(&code)
-            };
+            let code = body_or_code();
+            let out = run_plain(&code);
             Some(tcp::HttpReply::ok_owned("text/plain; charset=utf-8", out.into_bytes()))
         }
         _ => None,

@@ -29,6 +29,8 @@ crypto_box = { version = "0.9", default-features = false, features = ["salsa20",
 tailscale-core = { path = "../../demo/esp32-tailscale-pyspell/core" }
 # So the browser node actually SERVES PySpell over the tunnel (the simulated ESP32).
 pyspell-core = { path = "../pyspell-core", default-features = false }
+# The tiny LLM (English -> Python) running ON the node, for the /ask endpoint.
+tinyllm = { path = "../tinyllm", default-features = false }
 
 [dependencies.web-sys]
 version = "0.3"

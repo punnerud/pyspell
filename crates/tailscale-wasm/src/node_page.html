@@ -1,0 +1,67 @@
+<!doctype html><html lang=en><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>PySpell · your browser ESP32 over Tailscale</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#0d1117;color:#e6edf3;line-height:1.5;padding:1.1rem;max-width:34rem;margin:0 auto}
+h2{font-size:1.2rem}p{color:#9da7b3;font-size:.9rem}
+#pin{width:100%;padding:.7rem;font-size:1.05rem;background:#161b22;color:#e6edf3;border:1px solid #30363d;border-radius:9px}
+.exs{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
+.ex{cursor:pointer;border:1px solid #30363d;background:#161b22;color:#58a6ff;border-radius:999px;padding:.2rem .6rem;font-size:.82rem}
+.out{background:#1f2630;border:1px solid #30363d;border-radius:9px;padding:.7rem;margin-top:.6rem;font-family:ui-monospace,Menlo,monospace;font-size:.92rem;white-space:pre-wrap;word-break:break-word;min-height:2rem}
+.lbl{color:#9da7b3;font-size:.72rem;text-transform:uppercase}.res{color:#3fb950;font-weight:600}
+.dongle{width:210px;margin:1rem auto 0;background:#0b0e13;border:2px solid #2b3340;border-radius:14px;padding:13px}
+.scr{height:88px;border-radius:6px;background:#05210f;border:1px solid #14361f;color:#7ee787;font-family:ui-monospace,Menlo,monospace;font-size:13px;padding:8px;display:flex;align-items:center;justify-content:center;text-align:center;transition:background .2s}
+.drow{display:flex;align-items:center;gap:9px;margin-top:9px}.led{width:20px;height:20px;border-radius:50%;background:#222;border:1px solid #333;transition:all .25s}.dcap{color:#9da7b3;font-size:.75rem}
+.usb{width:34px;height:13px;background:#3a4250;border-radius:0 3px 3px 0;margin:8px auto 0}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.15}}.blinking{animation:blink .18s steps(1) 6}
+</style></head><body>
+<h2>🧪 Your browser-simulated ESP32 — over Tailscale</h2>
+<p>This page is served by a PySpell node running in another browser tab on your tailnet, reached over Tailscale (no hardware, no cloud). Type plain English; arithmetic/device/string run instantly (the browser builds them), anything else asks the tiny LLM on the node.</p>
+<input id=pin placeholder='e.g. turn the led on  ·  what is 7 plus 5  ·  show the text "hi"' autocomplete=off>
+<div class="exs" id=exs></div>
+<div class="out" id=out><span class=lbl>output</span><br><span id=stat>type and press Enter</span></div>
+<div class="dongle"><div class="scr" id=scr>PySpell</div><div class="drow"><div class="led" id=led></div><div class="dcap">RGB LED</div></div><div class="usb"></div></div>
+<script>
+const $=id=>document.getElementById(id),he=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+function genFastPath(t){const op={'+':'+','-':'-','*':'*','/':'//','plus':'+','add':'+','minus':'-','subtract':'-','times':'*','multiply':'*','multiplied':'*','divide':'//','divided':'//'}
+let m=t.match(/(-?\d+)\s*([+\-*\/])\s*(-?\d+)/);if(m)return 'print('+m[1]+' '+op[m[2]]+' '+m[3]+')'
+m=t.match(/\b(add|subtract|multiply|divide|plus|minus|times)\b[^\d-]*(-?\d+)\D+?(-?\d+)/i);if(m&&op[m[1].toLowerCase()])return 'print('+m[2]+' '+op[m[1].toLowerCase()]+' '+m[3]+')'
+return null}
+function _strArg(t){let m
+if(m=t.match(/"([^"]*)"/))return m[1]
+if(m=t.match(/\bmake\s+(.+?)\s+(?:upper ?case|lower ?case)\b/i))return m[1].trim()
+if(m=t.match(/\b(?:word|text|sentence|string)\s+(?:of\s+)?(.+?)(?:\s+(?:around|backwards))?\s*[?.!]*$/i))return m[1].trim()
+if(m=t.match(/\b(?:reverse|flip|uppercase|lowercase|reversed)\s+(.+?)\s*[?.!]*$/i))return m[1].trim()
+return null}
+function genDevice(t){let m,s
+if(/\b(reverse|flip|backwards|reversed)\b/i.test(t)&&(s=_strArg(t)))return 'print(reverse("'+s+'"))'
+if(/\b(upper ?case|capitali[sz]e)\b/i.test(t)&&(s=_strArg(t)))return 'print(upper("'+s+'"))'
+if(/\b(lower ?case)\b/i.test(t)&&(s=_strArg(t)))return 'print(lower("'+s+'"))'
+if(m=t.match(/\b(show|display|write|put|print|say|output)\b[^"]*"([^"]*)"/i)){const v=m[1].toLowerCase();return (v=='print'||v=='say'||v=='output')?'print("'+m[2]+'")':'show("'+m[2]+'")'}
+if(/\b(uptime|seconds since boot)\b/i.test(t))return 'show(uptime_s)'
+if(/\b(free\s*(?:memory|heap)|memory)\b/i.test(t)&&/\b(show|display|put|what)\b/i.test(t))return 'show(free_heap)'
+if(m=t.match(/\b(?:make|set|turn)\b[^"]*\b(red|green|blue|yellow|white|orange|purple|pink)\b/i))return 'led("'+m[1].toLowerCase()+'")'
+if(/\b(flash|blink)\b/i.test(t)&&/\b(led|light|lamp)\b/i.test(t))return 'flash()'
+if(/\b(led|light|lamp)\b/i.test(t)&&/\bon\b/i.test(t))return 'led(1)'
+if(/\b(led|light|lamp)\b/i.test(t)&&/\boff\b/i.test(t))return 'led(0)'
+return null}
+function animate(r){const scr=$('scr'),led=$('led')
+if(r.show!=null){scr.textContent=r.show;clearTimeout(animate._t);animate._t=setTimeout(()=>scr.textContent='PySpell',6000)}
+if(r.led!=null){const c=r.led,col=c==='off'?'#222':(c==='white'?'#fff':c);led.style.background=col;led.style.boxShadow=c==='off'?'none':'0 0 12px 3px '+col}
+if(r.flash){led.style.background='#fff';led.style.boxShadow='0 0 12px 3px #fff';led.classList.remove('blinking');void led.offsetWidth;led.classList.add('blinking')}}
+async function ask(text){
+if(!text.trim())return
+$('out').innerHTML='<span class=lbl>output</span><br><span id=stat>…thinking on the node…</span>'
+let r
+try{
+  const fp=genFastPath(text)||genDevice(text)
+  if(fp){r=await (await fetch('/eval',{method:'POST',body:fp})).json()}
+  else{r=await (await fetch('/ask?q='+encodeURIComponent(text))).json()}
+}catch(e){$('out').innerHTML='<span class=lbl>error</span><br>'+he(''+e);return}
+let h='<span class=lbl>python (on the node)</span><br><code>'+he(r.py||'')+'</code>'
+h+='<br><span class=lbl>result</span><br><span class=res>'+he(r.result||'')+'</span>'
+$('out').innerHTML=h;animate(r)}
+const EX=['turn the led on','make the light red','what is 7 plus 5','show the text "hei"','reverse the word robot']
+$('exs').innerHTML=EX.map(e=>'<span class=ex>'+he(e)+'</span>').join('');[...$('exs').children].forEach((el,i)=>el.onclick=()=>{$('pin').value=EX[i];ask(EX[i])})
+$('pin').onkeydown=e=>{if(e.key==='Enter')ask($('pin').value)}
+</script></body></html>
