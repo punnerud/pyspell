@@ -117,6 +117,52 @@ impl FlashReader for PartReader {
     }
 }
 
+/// Memory-map the `model.bin` region of the flash partition into the address space and
+/// return it as a `&'static [u8]`. The weights are read on demand through the flash
+/// cache — they **never enter the heap** (the whole point: the 489 kB model can't fit
+/// the ~60 kB free heap). For on-device inference (`device_llm`) over the same weights
+/// the browser/WASM path streams. The mapping is created once and kept for the program
+/// lifetime (we never munmap). Returns `None` if no image is flashed or mmap fails.
+static MODEL_MMAP: OnceLock<Option<&'static [u8]>> = OnceLock::new();
+pub fn model_mmap() -> Option<&'static [u8]> {
+    *MODEL_MMAP.get_or_init(|| {
+        let t = toc()?;
+        let p = t.part as *const sys::esp_partition_t;
+        let mut ptr: *const core::ffi::c_void = core::ptr::null();
+        let mut handle: sys::esp_partition_mmap_handle_t = 0;
+        let r = unsafe {
+            sys::esp_partition_mmap(
+                p,
+                t.model_off,
+                t.model_len,
+                sys::esp_partition_mmap_memory_t_ESP_PARTITION_MMAP_DATA,
+                &mut ptr,
+                &mut handle,
+            )
+        };
+        if r != sys::ESP_OK || ptr.is_null() {
+            println!("model_host: esp_partition_mmap failed (err {r})");
+            return None;
+        }
+        // SAFETY: the partition is read-only flash mapped for the program lifetime; the
+        // region [ptr, ptr+model_len) is valid and immutable. `handle` is intentionally
+        // dropped (never munmap'd) so the mapping stays live.
+        Some(unsafe { core::slice::from_raw_parts(ptr as *const u8, t.model_len) })
+    })
+}
+
+/// The tokenizer blob copied into RAM (small, ~6.7 kB) for on-device inference. The
+/// browser path streams it instead via [`tokenizer_source`].
+pub fn tokenizer_bytes() -> Option<Vec<u8>> {
+    let t = toc()?;
+    let mut buf = vec![0u8; t.tok_len];
+    if part_read(t.part, t.tok_off, &mut buf) {
+        Some(buf)
+    } else {
+        None
+    }
+}
+
 /// `BodySource` for the model weights blob, or `None` if no image is flashed.
 pub fn model_source() -> Option<BodySource> {
     let t = toc()?;

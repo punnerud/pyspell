@@ -36,11 +36,15 @@
 <body>
 <header>
   <h1>PySpell</h1>
-  <p><strong>Toward micro-containers for microcontrollers.</strong> Write a tiny program in
-  <strong>Rust</strong> or <strong>Python</strong> syntax, compile it to a compact IR on a host, and
-  <strong>push it live to an ESP32</strong> — reachable over <strong>Tailscale</strong> — to run in a
-  sandbox against live device state. Like MicroPython, but two syntaxes and the parser never ships to
-  the device.</p>
+  <p style="font-size:1.25rem;color:var(--fg);max-width:48rem;margin:.6rem auto">
+  <strong>Why learn to <em>spell</em> Python when PySpell can conjure it for you?</strong>
+  Say what you want in plain English and a tiny on-device model turns it into runnable Python —
+  <strong>100% locally on a $10 ESP32 with 512&nbsp;kB RAM</strong> (no PSRAM, no cloud, no API key),
+  reachable anywhere over <strong>Tailscale</strong>.</p>
+  <p>The chip serves a web agent IDE, a native <strong>MCP server</strong> and a <strong>REST API</strong>,
+  runs the code in a sandbox (with live <strong>web-request / <code>fetch</code></strong> support), and drives
+  its own screen + LED — up to <strong>8 parallel</strong> PySpell processes on that same half-megabyte of RAM.
+  Like MicroPython, but two syntaxes, the parser never ships to the device, and English is the third syntax.</p>
   <div class="badges">
     <span class="badge">no_std + alloc core</span>
     <span class="badge">Rust &amp; Python front-ends</span>

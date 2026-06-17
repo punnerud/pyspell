@@ -158,6 +158,30 @@ weakness — which is structural and *not* data-fixable — isn't chased), finds
 weak *families*, oversamples them, retrains a candidate, and **gates** it against the
 champion (promote only if it doesn't regress). `flywheel.py` runs the loop.
 
+### Bonus — running the model *on the chip itself* (feasibility spike)
+
+The browser is the normal compute path, but the ESP32 can also run the model **on-device**
+(`POST /generate`), proving the dongle is self-sufficient. Findings from the spike:
+
+- **It works, and it's fast** — greedy generation produced correct code on-chip
+  (`turn the led on` → `led(1)`, `what is 8 plus 3` → `print(8 + 3)`) in **~1.9 s for 24
+  tokens** (the 40 s estimate was pessimistic; the model is tiny).
+- **Weights never touch the heap** — `model.bin` is `esp_partition_mmap`'d; the forward
+  pass reads it through the flash cache (streamed/paged), so the 489 kB model runs on a
+  chip with ~60 kB free heap.
+- **int8 KV cache, bounded context** (`RunState::try_new_int8`, `MAX_CTX=32`) — the f32
+  cache (256 kB) won't fit; int8 + short context keeps the working set ~25 kB. Allocated
+  with `try_reserve` so a tight heap returns a clean "low memory" instead of an
+  OOM-reboot, on a **persistent worker thread** (stack allocated once) that **yields each
+  step**, so Tailscale stays online and `/run` keeps serving *in parallel* during a
+  generation.
+- **The honest limit is memory.** Free heap is ~60 kB fresh, fragmenting toward ~30 kB
+  under sustained load; the granular 512-vocab tokenizer makes prompts 17–24 tokens, so
+  the longest commands truncate at `MAX_CTX`, and back-to-back runs cleanly refuse
+  ("try again when idle"). Reliable sustained on-device generation wants PSRAM or a
+  dedicated inference memory pool. So: **the chip *can* run its own model — best-effort,
+  when idle — but the browser path (WASM, <0.4 s) is what you'd use day to day.**
+
 ---
 
 ## What's actually new here

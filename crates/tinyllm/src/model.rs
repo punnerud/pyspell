@@ -13,6 +13,23 @@ use alloc::vec::Vec;
 use crate::format::{Config, Model, ModelError};
 use crate::math::{matmul, quantize, rmsnorm, silu, softmax};
 
+/// Allocate a zeroed `Vec<f32>` of length `n` with `try_reserve` (returns `None` on OOM
+/// instead of aborting — for tight, fragmented device heaps).
+fn zf(n: usize) -> Option<Vec<f32>> {
+    let mut v: Vec<f32> = Vec::new();
+    v.try_reserve_exact(n).ok()?;
+    v.resize(n, 0.0);
+    Some(v)
+}
+
+/// Same for `Vec<i8>`.
+fn zi(n: usize) -> Option<Vec<i8>> {
+    let mut v: Vec<i8> = Vec::new();
+    v.try_reserve_exact(n).ok()?;
+    v.resize(n, 0);
+    Some(v)
+}
+
 /// All mutable inference state for one sequence. Sized from the [`Config`] at
 /// construction; reused across tokens.
 pub struct RunState {
@@ -28,34 +45,74 @@ pub struct RunState {
     q: Vec<f32>,     // dim
     k: Vec<f32>,     // kv_dim
     v: Vec<f32>,     // kv_dim
-    att: Vec<f32>,   // n_heads * seq_len
+    att: Vec<f32>,   // n_heads * ctx
     logits: Vec<f32>, // vocab
-    key_cache: Vec<f32>,   // n_layers * seq_len * kv_dim
-    value_cache: Vec<f32>, // n_layers * seq_len * kv_dim
+    // KV cache. `ctx` = allocated context length (seq_len for f32; max_ctx for int8).
+    // Two representations: f32 (run.c-exact, for the host gate) or int8 + a per-vector
+    // scale (4× smaller — the device path, since the cache dominates RAM). Only one set
+    // is allocated; the other stays empty.
+    ctx: usize,
+    int8: bool,
+    key_cache: Vec<f32>,   // f32: n_layers * ctx * kv_dim
+    value_cache: Vec<f32>,
+    key_q: Vec<i8>,        // int8: n_layers * ctx * kv_dim
+    val_q: Vec<i8>,
+    key_s: Vec<f32>,       // int8: n_layers * ctx (one scale per cached kv vector)
+    val_s: Vec<f32>,
 }
 
 impl RunState {
     pub fn new(c: &Config) -> Self {
+        Self::try_with_cache(c, c.seq_len, false).expect("RunState alloc")
+    }
+
+    /// Device path: int8 KV cache bounded to `max_ctx` tokens (4× smaller than the f32
+    /// cache, and `max_ctx` ≪ `seq_len` keeps it tiny). `pos` passed to `forward` must
+    /// stay `< max_ctx`. Math is otherwise identical to [`new`]. Panics on OOM — use
+    /// [`try_new_int8`](Self::try_new_int8) on a memory-constrained device.
+    pub fn new_int8(c: &Config, max_ctx: usize) -> Self {
+        Self::try_with_cache(c, max_ctx.min(c.seq_len), true).expect("RunState alloc")
+    }
+
+    /// Fallible int8 constructor for tight heaps (the ESP32): every buffer is allocated
+    /// with `try_reserve`, returning `None` instead of aborting if the (fragmented) heap
+    /// can't satisfy it — so a low-memory moment is a clean error, never a reboot.
+    pub fn try_new_int8(c: &Config, max_ctx: usize) -> Option<Self> {
+        Self::try_with_cache(c, max_ctx.min(c.seq_len), true)
+    }
+
+    fn try_with_cache(c: &Config, ctx: usize, int8: bool) -> Option<Self> {
         let kv_dim = c.kv_dim();
         let gs = c.group_size;
-        RunState {
-            x: vec![0.0; c.dim],
-            xb: vec![0.0; c.dim],
-            xb2: vec![0.0; c.dim],
-            hb: vec![0.0; c.hidden_dim],
-            hb2: vec![0.0; c.hidden_dim],
-            xq_q: vec![0; c.dim],
-            xq_s: vec![0.0; c.dim / gs],
-            hq_q: vec![0; c.hidden_dim],
-            hq_s: vec![0.0; c.hidden_dim / gs],
-            q: vec![0.0; c.dim],
-            k: vec![0.0; kv_dim],
-            v: vec![0.0; kv_dim],
-            att: vec![0.0; c.n_heads * c.seq_len],
-            logits: vec![0.0; c.vocab_size],
-            key_cache: vec![0.0; c.n_layers * c.seq_len * kv_dim],
-            value_cache: vec![0.0; c.n_layers * c.seq_len * kv_dim],
-        }
+        let cache = c.n_layers * ctx * kv_dim;
+        // One int8 scale per (layer, position, kv-head) — i.e. quantize each head's
+        // head_size values independently, so one head's outliers don't crush another's
+        // precision. Storage is tiny (n_kv_heads scales per cached vector).
+        let scales = c.n_layers * ctx * c.n_kv_heads;
+        Some(RunState {
+            x: zf(c.dim)?,
+            xb: zf(c.dim)?,
+            xb2: zf(c.dim)?,
+            hb: zf(c.hidden_dim)?,
+            hb2: zf(c.hidden_dim)?,
+            xq_q: zi(c.dim)?,
+            xq_s: zf(c.dim / gs)?,
+            hq_q: zi(c.hidden_dim)?,
+            hq_s: zf(c.hidden_dim / gs)?,
+            q: zf(c.dim)?,
+            k: zf(kv_dim)?,
+            v: zf(kv_dim)?,
+            att: zf(c.n_heads * ctx)?,
+            logits: zf(c.vocab_size)?,
+            ctx,
+            int8,
+            key_cache: zf(if int8 { 0 } else { cache })?,
+            value_cache: zf(if int8 { 0 } else { cache })?,
+            key_q: zi(if int8 { cache } else { 0 })?,
+            val_q: zi(if int8 { cache } else { 0 })?,
+            key_s: zf(if int8 { scales } else { 0 })?,
+            val_s: zf(if int8 { scales } else { 0 })?,
+        })
     }
 
     /// The logits produced by the last [`Transformer::forward`] call.
@@ -80,10 +137,14 @@ impl RunState {
             + self.att.len()
             + self.logits.len()
             + self.key_cache.len()
-            + self.value_cache.len())
+            + self.value_cache.len()
+            + self.key_s.len()
+            + self.val_s.len())
             * f
             + self.xq_q.len()
             + self.hq_q.len()
+            + self.key_q.len()
+            + self.val_q.len()
     }
 }
 
@@ -150,23 +211,39 @@ impl<'a> Transformer<'a> {
                 i += 2;
             }
 
-            // Append k,v to the cache at this position.
-            let loff = l * c.seq_len * kv_dim;
+            // Append k,v to the cache at this position. f32 = run.c-exact copy; int8 =
+            // quantize each kv vector with one scale (gs = kv_dim) — 4× smaller.
+            let loff = l * s.ctx * kv_dim;
             let row = loff + pos * kv_dim;
-            s.key_cache[row..row + kv_dim].copy_from_slice(&s.k[..kv_dim]);
-            s.value_cache[row..row + kv_dim].copy_from_slice(&s.v[..kv_dim]);
+            if s.int8 {
+                let nkv = c.n_kv_heads;
+                let si = (l * s.ctx + pos) * nkv;
+                quantize(&mut s.key_q[row..row + kv_dim], &mut s.key_s[si..si + nkv], &s.k[..kv_dim], head_size);
+                quantize(&mut s.val_q[row..row + kv_dim], &mut s.val_s[si..si + nkv], &s.v[..kv_dim], head_size);
+            } else {
+                s.key_cache[row..row + kv_dim].copy_from_slice(&s.k[..kv_dim]);
+                s.value_cache[row..row + kv_dim].copy_from_slice(&s.v[..kv_dim]);
+            }
 
-            // Multi-head attention over positions 0..=pos.
+            // Multi-head attention over positions 0..=pos (dequantizing the int8 cache
+            // on the fly — one scale per kv vector, hoisted out of the inner loop).
             let scale = 1.0 / libm::sqrtf(head_size as f32);
             for h in 0..c.n_heads {
                 let qoff = h * head_size;
-                let aoff = h * c.seq_len;
+                let aoff = h * s.ctx;
                 let kvh = (h / kv_mul) * head_size;
                 for t in 0..=pos {
                     let koff = loff + t * kv_dim + kvh;
                     let mut score = 0.0f32;
-                    for j in 0..head_size {
-                        score += s.q[qoff + j] * s.key_cache[koff + j];
+                    if s.int8 {
+                        let ks = s.key_s[(l * s.ctx + t) * c.n_kv_heads + h / kv_mul];
+                        for j in 0..head_size {
+                            score += s.q[qoff + j] * (s.key_q[koff + j] as f32) * ks;
+                        }
+                    } else {
+                        for j in 0..head_size {
+                            score += s.q[qoff + j] * s.key_cache[koff + j];
+                        }
                     }
                     s.att[aoff + t] = score * scale;
                 }
@@ -178,8 +255,15 @@ impl<'a> Transformer<'a> {
                 for t in 0..=pos {
                     let voff = loff + t * kv_dim + kvh;
                     let a = s.att[aoff + t];
-                    for j in 0..head_size {
-                        s.xb[xboff + j] += a * s.value_cache[voff + j];
+                    if s.int8 {
+                        let vs = s.val_s[(l * s.ctx + t) * c.n_kv_heads + h / kv_mul];
+                        for j in 0..head_size {
+                            s.xb[xboff + j] += a * (s.val_q[voff + j] as f32) * vs;
+                        }
+                    } else {
+                        for j in 0..head_size {
+                            s.xb[xboff + j] += a * s.value_cache[voff + j];
+                        }
                     }
                 }
             }
@@ -259,5 +343,28 @@ mod tests {
         let s = RunState::new(t.config());
         // tiny model: a few kB, definitely under 1 MB
         assert!(s.heap_bytes() > 0 && s.heap_bytes() < 1_000_000);
+    }
+
+    #[test]
+    fn int8_cache_matches_f32_and_is_smaller() {
+        let (_c, bytes) = build_tiny();
+        let t = Transformer::new(&bytes).unwrap();
+        let tokens = [1usize, 5, 2, 7];
+        let mut f = RunState::new(t.config());
+        let mut q = RunState::new_int8(t.config(), 16);
+        let (mut lf, mut lq) = (vec![], vec![]);
+        for (pos, &tok) in tokens.iter().enumerate() {
+            t.forward(&mut f, tok, pos);
+            t.forward(&mut q, tok, pos);
+            lf = f.logits().to_vec();
+            lq = q.logits().to_vec();
+        }
+        // int8 KV is lossy but must track the f32 path closely and pick the same argmax.
+        let amax = |v: &[f32]| v.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0;
+        assert_eq!(amax(&lf), amax(&lq), "int8 cache changed the predicted token");
+        let mse: f32 = lf.iter().zip(&lq).map(|(a, b)| (a - b) * (a - b)).sum::<f32>() / lf.len() as f32;
+        assert!(mse < 1.0, "int8 cache logits drift too far (mse {mse})");
+        // int8 cache (16 ctx) must use far less RAM than the f32 cache (seq_len ctx).
+        assert!(q.heap_bytes() < f.heap_bytes(), "int8 cache not smaller");
     }
 }

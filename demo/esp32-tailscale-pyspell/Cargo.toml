@@ -80,13 +80,16 @@ bench = ["direct"]                    # UDP throughput sink on port 5201 (iperf-
 dualcore = ["direct"]
 # PySpell add-on: serve a web text window + a `/run` API (over the tunnel) that
 # parses + evaluates Rust/Python expressions on-device via `pyspell-core`.
-pyspell = ["http-server", "dep:pyspell-core"]
+pyspell = ["http-server", "dep:pyspell-core", "dep:tinyllm"]
 
 [dependencies]
 # Portable Tailscale core (no_std+alloc); this crate is its ESP32 adapter.
 tailscale-core = { path = "core" }
 # PySpell core (no_std+alloc): parser + sandboxed evaluator. Optional add-on.
 pyspell-core = { path = "../../crates/pyspell-core", default-features = false, optional = true }
+# tinyllm: no_std int8 llama2 inference, reused on-device to run the model on the chip
+# itself (weights mmap'd from flash, never in heap). Optional add-on (the `/generate` API).
+tinyllm = { path = "../../crates/tinyllm", default-features = false, optional = true }
 log = "0.4"
 anyhow = "1"
 esp-idf-svc = "0.52"
