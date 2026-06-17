@@ -8,3 +8,7 @@ Cargo.lock
 # Secrets: the demo's WiFi/Tailscale credentials are copied in locally to build,
 # but must never be committed.
 demo/esp32-tailscale-pyspell/src/config.rs
+
+# local agent state
+.claude/
+train/flywheel_state.json

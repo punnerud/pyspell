@@ -192,7 +192,9 @@ def main():
     ap.add_argument("--seeds", default="seeds.jsonl")
     ap.add_argument("--oversample", type=int, default=8, help="repeat seeds N×")
     ap.add_argument("--boost", type=int, default=0, help="extra examples from weak families")
+    ap.add_argument("--boost-families", default=None, help="comma list of fams to boost (else WEAK_FAMILIES)")
     ap.add_argument("--edit-frac", type=float, default=0.0, help="fraction of EDIT rows (0..1)")
+    ap.add_argument("--reverse-frac", type=float, default=0.0, help="fraction of EXPLAIN (py->en) rows")
     ap.add_argument("--qwen", default=None)
     ap.add_argument("--out", default="data")
     ap.add_argument("--seed", type=int, default=1)
@@ -206,8 +208,9 @@ def main():
     n_edit = int(args.n * args.edit_frac)
     bulk = [gen_data.gen_example() for _ in range(args.n - n_edit)]
     if args.boost:
-        bulk += [gen_data.gen_example(random.choice(gen_data.WEAK_FAMILIES)) for _ in range(args.boost)]
-        print(f"boosted weak families with {args.boost} extra examples")
+        bf = [int(x) for x in args.boost_families.split(",")] if args.boost_families else gen_data.WEAK_FAMILIES
+        bulk += [gen_data.gen_example(random.choice(bf)) for _ in range(args.boost)]
+        print(f"boosted families {bf} with {args.boost} extra examples")
     edits = []
     for _ in range(n_edit):
         en, window, block = gen_any_edit()
@@ -234,6 +237,19 @@ def main():
             continue
         seen.add(k)
         out.append((en, py))
+    # Reverse direction: EXPLAIN <code> -> english (py->en). Appended pre-validated so
+    # canon (which collapses instruction whitespace) never mangles the code in `en`.
+    if args.reverse_frac > 0:
+        n_rev = int(len(out) * args.reverse_frac)
+        added = 0
+        for _ in range(n_rev * 3):
+            if added >= n_rev:
+                break
+            en_t, code = gen_data.gen_example(random.randint(0, 21))
+            if code.isascii() and en_t.isascii() and "EXPLAIN" not in code:
+                out.append(("EXPLAIN " + code, en_t))
+                added += 1
+        print(f"reverse (EXPLAIN) rows: {added}")
     random.shuffle(out)
     n_e = sum(1 for _, py in out if split_directive(py))
     print(f"kept {len(out)} unique valid pairs ({n_e} edit, rejected {rejected})")

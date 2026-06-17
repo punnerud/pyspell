@@ -52,6 +52,7 @@ PY_TOKENS = [
     "round(", "** ", ") / 2", " % ",
     # Edit-mode protocol tokens (anchor-based directives: replace/delete/move/rename).
     "EDIT", " EDIT", "@@ ", " ==> ", "DEL ", "MOVE ", "RENAME ",
+    "EXPLAIN ",  # reverse direction: EXPLAIN <code> -> english
 ]
 # vocab 512 = 3 specials + 256 reserved byte tokens + ~60 base chars leaves ~190 slots,
 # so force the space-prefixed word forms (what appears mid-sentence) + Python tokens; BPE
