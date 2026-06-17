@@ -13,8 +13,11 @@ import argparse
 import json
 import os
 import random
+import re
 
 import gen_data
+
+EDIT_RE = re.compile(r"^@@ (.*?) ==> (.*)$")
 
 
 def canon(en, py):
@@ -33,6 +36,27 @@ def valid(en, py):
         return False
     try:
         compile(py, "<curate>", "exec")
+    except SyntaxError:
+        return False
+    return True
+
+
+def valid_edit(window, block):
+    """An edit row's body is `window + "\\n" + block` where block is `@@ old ==> new`.
+    Valid iff old occurs in the window, no marker collisions, and the spliced line
+    compiles."""
+    m = EDIT_RE.match(block)
+    if not m:
+        return False
+    old, new = m.group(1), m.group(2)
+    if not old or old not in window:
+        return False
+    if any(s in (window + new) for s in ("@@", "==>")):
+        return False
+    if not (window.isascii() and block.isascii()):
+        return False
+    try:
+        compile(window.replace(old, new, 1), "<edit>", "exec")
     except SyntaxError:
         return False
     return True
@@ -82,6 +106,7 @@ def main():
     ap.add_argument("--seeds", default="seeds.jsonl")
     ap.add_argument("--oversample", type=int, default=8, help="repeat seeds N×")
     ap.add_argument("--boost", type=int, default=0, help="extra examples from weak families")
+    ap.add_argument("--edit-frac", type=float, default=0.0, help="fraction of EDIT rows (0..1)")
     ap.add_argument("--qwen", default=None)
     ap.add_argument("--out", default="data")
     ap.add_argument("--seed", type=int, default=1)
@@ -92,17 +117,30 @@ def main():
     seeds = load_seeds(args.seeds)
     print(f"seeds: {len(seeds)}")
     extra = qwen_paraphrase(seeds, args.qwen) if args.qwen else []
-    bulk = [gen_data.gen_example() for _ in range(args.n)]
+    n_edit = int(args.n * args.edit_frac)
+    bulk = [gen_data.gen_example() for _ in range(args.n - n_edit)]
     if args.boost:
         bulk += [gen_data.gen_example(random.choice(gen_data.WEAK_FAMILIES)) for _ in range(args.boost)]
         print(f"boosted weak families with {args.boost} extra examples")
+    edits = []
+    for _ in range(n_edit):
+        en, window, block = gen_data.gen_edit_example()
+        if valid_edit(window, block):
+            edits.append(("EDIT " + en, window + "\n" + block))
+    if n_edit:
+        print(f"edit rows: {len(edits)} (target {n_edit})")
 
-    allp = bulk + (seeds + extra) * args.oversample
+    allp = bulk + edits + (seeds + extra) * args.oversample
     seen, out = set(), []
     rejected = 0
     for en, py in allp:
         en, py = canon(en, py)
-        if not valid(en, py):
+        if "\n@@ " in py:  # EDIT row (window + "\n" + block)
+            window, block = py.rsplit("\n", 1)
+            if not (en.startswith("EDIT ") and valid_edit(window, block)):
+                rejected += 1
+                continue
+        elif not valid(en, py):
             rejected += 1
             continue
         k = en + "\x00" + py
@@ -111,7 +149,8 @@ def main():
         seen.add(k)
         out.append((en, py))
     random.shuffle(out)
-    print(f"kept {len(out)} unique valid pairs (rejected {rejected})")
+    n_e = sum(1 for _, py in out if "\n@@ " in py)
+    print(f"kept {len(out)} unique valid pairs ({n_e} edit, rejected {rejected})")
 
     val, train = out[: args.val], out[args.val:]
     for name, rows in (("train", train), ("val", val)):

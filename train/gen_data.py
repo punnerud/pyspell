@@ -113,6 +113,51 @@ def gen_example(fam=None):
     return en, py
 
 
+def gen_edit_example():
+    """Return one (en, window, block) edit triple. `block` is a find/replace directive
+    `@@ <old> ==> <new>`; applying it to `window` (window.replace(old, new, 1)) yields a
+    line that compiles. The model copies only the tiny `old` substring (often a single
+    in-vocab token) — the browser does the rest, so list/long content is never emitted."""
+    m = random.randint(0, 5)
+    if m == 0:  # change a range upper bound (2-line window so it compiles)
+        a = _int(1, 5)
+        b1, b2 = _int(6, 9), _int(10, 15)
+        window = f"for i in range({a}, {b1 + 1}):\n    print(i)"
+        old, new = f"{b1 + 1})", f"{b2 + 1})"
+        en = random.choice([f"change the upper bound to {b2}", f"make it go up to {b2}",
+                            f"count up to {b2}"])
+    elif m == 1:  # swap arithmetic operator
+        a, b = _int(0, 20), _int(1, 20)
+        (o1, v1), (o2, v2) = random.sample(
+            [("+", "add"), ("-", "subtract"), ("*", "multiply"), ("//", "divide")], 2)
+        window = f"print({a} {o1} {b})"
+        old, new = f" {o1} ", f" {o2} "
+        en = random.choice([f"make it {v2} instead", f"use {v2}", f"change {v1} to {v2}"])
+    elif m == 2:  # rename a variable
+        n1, n2 = random.sample(["x", "y", "n", "count", "total", "result", "value", "num", "temp"], 2)
+        v = _int(0, 99)
+        window = f"{n1} = {v}"
+        old, new = f"{n1} =", f"{n2} ="
+        en = random.choice([f"rename {n1} to {n2}", f"call it {n2} instead"])
+    elif m == 3:  # swap a list builtin (no list copy — only the fn token changes)
+        (f1, w1), (f2, w2) = random.sample(
+            [("sum", "sum"), ("max", "largest"), ("min", "smallest"), ("len", "length")], 2)
+        window = f"print({f1}({_list()}))"
+        old, new = f"{f1}(", f"{f2}("
+        en = random.choice([f"use the {w2} instead of the {w1}", f"find the {w2} not the {w1}"])
+    elif m == 4:  # change a printed word
+        s1, s2 = random.sample(["hello", "world", "cat", "dog", "apple", "tree", "sun", "code"], 2)
+        window = f'print("{s1}")'
+        old, new = f'"{s1}"', f'"{s2}"'
+        en = random.choice([f"print {s2} instead", f"change the word to {s2}"])
+    else:  # turn a counting-up loop into a countdown (2-line window so it compiles)
+        a = _int(3, 9)
+        window = f"for i in range(1, {a + 1}):\n    print(i)"
+        old, new = f"range(1, {a + 1})", f"range({a}, 0, -1)"
+        en = random.choice(["count down instead", "reverse the direction", "go downwards"])
+    return en, window, f"@@ {old} ==> {new}"
+
+
 def qwen_examples(model: str, n: int):
     """Optional: ask a local ollama Qwen model for extra (en, py) pairs."""
     import urllib.request

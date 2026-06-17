@@ -46,6 +46,8 @@ PY_TOKENS = [
     "sum(", "max(", "min(", ".upper()", ".lower()", "[::-1]", "== 0", '("', '")',
     ", ", " % 2", " == ", " > ", "** 2", "** 3", ", 0, -1)", "for i in range(",
     "for item in ", "range", "def", "return",
+    # Edit-mode protocol tokens (anchor-based find/replace edits).
+    "EDIT", " EDIT", "@@ ", " ==> ",
 ]
 # vocab 512 = 3 specials + 256 reserved byte tokens + ~60 base chars leaves ~190 slots,
 # so force the space-prefixed word forms (what appears mid-sentence) + Python tokens; BPE

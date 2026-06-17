@@ -388,7 +388,7 @@ button{background:#238636;color:#fff;border:0;border-radius:6px;padding:6px 12px
 <div class=bar><button onclick=run()>Run</button><button class=sec onclick="ask('Improve this code')">Ask agent</button></div>
 <pre id=out></pre></div>
 <div class=pane><div id=chat></div>
-<div class=crow><input id=msg placeholder="Ask the agent..." onkeydown="if(event.key=='Enter')send()"><button onclick=send()>Send</button><button class=sec onclick=applyLast() title="splice the last snippet into the best-matching code line">Apply</button></div></div>
+<div class=crow><input id=msg placeholder="Ask the agent..." onkeydown="if(event.key=='Enter')send()"><button onclick=send()>Send</button><button class=sec onclick=editBtn() title="edit the matching code line in place (model emits a find/replace)">Edit</button><button class=sec onclick=applyLast() title="splice the last snippet into the best-matching code line">Apply</button></div></div>
 </main>
 <script>
 const $=id=>document.getElementById(id),LS=localStorage
@@ -405,7 +405,7 @@ async function send(pre){const text=pre||$('msg').value;if(!text)return
 $('msg').value='';chat.push({role:'user',content:text});render();save()
 if($('key').value){await openai()}else{
 const bad=await validate(text);if(bad.length){chat.push({role:'assistant',content:'⚠ outside the model vocabulary: '+bad.join(', ')+' — the local model may not understand these (rephrase with common words).'});render()}
-await local(text)}}
+if($('code').value.trim()&&/\b(change|rename|instead|replace|swap|make it|count down|upper bound|use the)\b/i.test(text)){await localEdit(text)}else{await local(text)}}}
 // Phase B: word dictionary + embeddings served from the dongle, for input validation
 // + related-word search (RAG over our OWN vocab — the same table the model thinks in).
 let _wm
@@ -446,6 +446,29 @@ if(wm){const q=meanEmb(wm,u.content);if(q)lines.forEach((ln,i)=>{const e=meanEmb
 if(best>=0&&bestsc>0.4&&lines[best].trim()){lines[best]=snippet;$('code').value=lines.join('\n');$('out').textContent='replaced line '+(best+1)+' (match '+bestsc.toFixed(2)+')'}
 else{$('code').value=(code.trim()?code.replace(/\s*$/,'')+'\n':'')+snippet;$('out').textContent='inserted at end'}
 save()}
+// Anchor-based edit: the model emits a find/replace directive "@@ old ==> new" for a
+// small window the browser retrieved; the browser does the actual edit (line.replace),
+// so lists/long tails are never copied by the model.
+function parseEdit(t){const m=t.match(/@@ ([\s\S]*?) ==> ([\s\S]*?)(?:\n|$)/);return m?{o:m[1],n:m[2]}:null}
+async function localEdit(instr){const i=chat.push({role:'assistant',content:'⏳ editing…'})-1;render()
+const set=t=>{chat[i].content=t;render()}
+let m;try{m=await ensureLocal(set)}catch(e){set('load failed: '+e);return}
+let wm=null;try{wm=await ensureWords()}catch(e){}
+const lines=$('code').value.split('\n');if(!$('code').value.trim()){set('(no code to edit)');return}
+let best=0,bestsc=-1
+if(wm){const q=meanEmb(wm,instr);if(q)lines.forEach((ln,j)=>{const e=meanEmb(wm,ln);if(e){const s=cosv(q,e);if(s>bestsc){bestsc=s;best=j}}})}
+let win=lines[best];if(best+1<lines.length&&/^\s/.test(lines[best+1]))win+='\n'+lines[best+1]
+set('')
+let out='',p;const g=new m.mod.Generator(m.model,m.tok,'EDIT '+instr+'\n'+win,48,0,0.9,1)
+while((p=g.step())!==undefined){out+=p}
+const ed=parseEdit(out)
+if(!ed||!ed.o){set('no edit produced: '+JSON.stringify(out.slice(0,80)));return}
+let tgt=-1
+for(let off=0;off<lines.length;off++){const j=(best+off)%lines.length;if(lines[j].includes(ed.o)){tgt=j;break}}
+if(tgt<0){set('anchor not found in code: '+JSON.stringify(ed.o));return}
+lines[tgt]=lines[tgt].replace(ed.o,ed.n);$('code').value=lines.join('\n');save()
+set('✎ line '+(tgt+1)+': '+JSON.stringify(ed.o)+' → '+JSON.stringify(ed.n)+'  ⟨local edit⟩')}
+function editBtn(){const t=$('msg').value;if(!t)return;$('msg').value='';chat.push({role:'user',content:t});render();save();localEdit(t)}
 async function openai(){const key=$('key').value
 const msgs=[{role:'system',content:sys()},{role:'user',content:'Current code:\n'+$('code').value},...chat]
 try{const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+key},body:JSON.stringify({model:$('model').value,messages:msgs})})
