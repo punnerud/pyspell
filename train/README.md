@@ -87,9 +87,39 @@ python sample.py --prompt "print numbers from 1 to 5"
 python validate.py "print numbers from 1 to 5"      # input validator
 ```
 
+## 2b) Train in the cloud (Modal) — minutes, ~$0.10, no laptop wait
+Don't want the ~1 h M3 run? Train on a cloud GPU instead. `modal_train.py` runs the same
+code on a [Modal](https://modal.com) **A10G**; the frozen embedding is precomputed locally
+(numpy + ollama) and shipped, so the cloud job needs only `torch`+`numpy` — no ollama, no
+GPU-side embedding build.
+
+```bash
+pip install modal && modal token set --token-id ... --token-secret ...   # once
+# precompute the tokenizer + frozen embedding locally (needs local `ollama` + all-minilm):
+cp out/embed_cache.json out_delex/embed_cache.json
+python prep_delex.py --data data --out out_delex
+# stage the assets Modal uploads, then train + pull web/model.bin + tokenizer.bin back:
+mkdir -p /tmp/modal_pkg/data /tmp/modal_pkg/out_delex
+cp *.py seeds.jsonl /tmp/modal_pkg/ && rm /tmp/modal_pkg/modal_train.py
+cp data/{train,val}.jsonl /tmp/modal_pkg/data/
+cp out_delex/{bpe.json,tokenizer.bin,embed_pca.npz} /tmp/modal_pkg/out_delex/
+modal run modal_train.py
+```
+
+**Measured (this model, A10G):** image build ~49 s (one-time, then cached), training
+**early-stopped at ~2.4 min** (~1.1 M tok/s) — vs ~1 h on the M3, a ~25× speed-up. At
+~$1.10/hr that's **≈ $0.05–0.10 per run**, far under a $10 budget. Result was *better*
+than the local champion (held-out: exact 86 %, struct 86 %, compiles 96 %).
+
+`modal run` writes `web/model.bin` + `web/tokenizer.bin` straight into the repo; commit +
+hard-refresh and `index.html` auto-detects the delex markers and switches the slot
+machinery on. (No secrets in `modal_train.py` — the token lives in `~/.modal.toml`; rotate
+it when done.)
+
 ## 3) Export + flash
 ```bash
 python export_v2.py --out out                 # -> out/model.img  (<500 kB)
+python export_v2.py --out out --emit-web ../web  # also -> web/model.bin + tokenizer.bin (Pages/WASM)
 espflash write-bin 0x810000 out/model.img
 ```
 Serving is unchanged — this just replaces the model the dongle hosts. Hard-refresh the
