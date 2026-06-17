@@ -72,7 +72,8 @@ def main():
     ap.add_argument("--image", default=None, help="output image path (default out/model.img)")
     args = ap.parse_args()
 
-    ckpt_path = os.path.join(args.out, "ckpt.pt")
+    best = os.path.join(args.out, "best.pt")
+    ckpt_path = best if os.path.exists(best) else os.path.join(args.out, "ckpt.pt")  # prefer best val
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)  # our own ckpt (trusted)
     cfg = Config(**ck["cfg"])
     model = Llama(cfg)

@@ -160,6 +160,7 @@ def main():
     ap.add_argument("--max-steps", type=int, default=10_000_000)
     ap.add_argument("--ckpt-interval", type=int, default=200)
     ap.add_argument("--eval-interval", type=int, default=500)
+    ap.add_argument("--patience", type=int, default=6, help="stop after N evals w/o val improvement")
     ap.add_argument("--device", default=None)
     args = ap.parse_args()
 
@@ -215,6 +216,8 @@ def main():
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
+    best_path = os.path.join(args.out, "best.pt")
+    no_improve = 0
     model.train()
     t0 = time.time()
     tok_per_step = bs * cfg.seq_len
@@ -240,15 +243,24 @@ def main():
                   f"{mins:.1f}/{args.max_minutes:.0f} min", flush=True)
         if step % args.eval_interval == 0:
             vl = eval_loss(model, val_data, bs, cfg.seq_len, device)
-            best_val = min(best_val, vl)
-            print(f"  >> val loss {vl:.3f} (best {best_val:.3f})", flush=True)
+            if vl < best_val:
+                best_val = vl
+                no_improve = 0
+                save_ckpt(best_path, model, opt, step, best_val, cfg)  # keep the BEST
+                print(f"  >> val loss {vl:.3f} (best {best_val:.3f}) [saved best]", flush=True)
+            else:
+                no_improve += 1
+                print(f"  >> val loss {vl:.3f} (best {best_val:.3f}) [{no_improve}/{args.patience}]", flush=True)
+                if no_improve >= args.patience:
+                    print("early stop: val not improving")
+                    break
         if step % args.ckpt_interval == 0:
             save_ckpt(ckpt_path, model, opt, step, best_val, cfg)
         if _STOP:
             break
 
     save_ckpt(ckpt_path, model, opt, step, best_val, cfg)
-    print(f"checkpoint saved at step {step} -> {ckpt_path}")
+    print(f"latest -> {ckpt_path}; best (val {best_val:.3f}) -> {best_path}")
     print("done. export with:  python export_v2.py --out", args.out)
 
 
