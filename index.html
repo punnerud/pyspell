@@ -96,7 +96,22 @@
       <p class="hint" style="text-align:center;margin-top:.5rem">screen + LED react to the code</p>
     </div>
   </div>
-  <p class="hint">Runs 100% in your browser. To drive a <em>real</em> ESP32, open the dongle's page on your tailnet (<code>http://&lt;device&gt;/</code>) — a public HTTPS page can't reach a plain-HTTP <code>100.x</code> address (mixed-content), so there's no live link from here. <a href="https://github.com/punnerud/pyspell/blob/main/tech.md">How it works →</a></p>
+  <p class="hint">Runs 100% in your browser. Want it reachable from your <em>phone</em>? Use <b>Connect Tailscale</b> below to turn this tab into a private node on your own tailnet. <a href="https://github.com/punnerud/pyspell/blob/main/tech.md">How it works →</a></p>
+</div>
+
+<div class="demo" style="margin-top:1.2rem">
+  <details id=tsd>
+    <summary style="cursor:pointer;font-size:1.05rem;color:var(--acc)"><b>🔗 Connect Tailscale</b> — make this tab a private node on your own tailnet (reachable from your phone)</summary>
+    <div style="margin-top:.7rem">
+      <p class="hint">Opt-in — nothing connects until you click. Our Rust Tailscale client (~321&nbsp;kB WASM) joins <em>your</em> tailnet over WebSocket; node keys stay in this browser. Then open <code>http://&lt;node-ip&gt;/</code> from any device on your tailnet to get this same demo, over the tunnel.</p>
+      <button id=tsbtn style="background:#238636;color:#fff;border:0;border-radius:7px;padding:.55rem 1.1rem;cursor:pointer;font-size:.95rem">Connect Tailscale</button>
+      <button id=tsforget style="display:none;background:#30363d;color:#fff;border:0;border-radius:7px;padding:.55rem 1.1rem;cursor:pointer;font-size:.95rem">Forget node</button>
+      <div class="out" id=tsout style="display:none"><span class="lbl">status</span><br><span id=tsstat></span></div>
+      <div id=tsauth style="display:none;margin-top:.5rem">Authorize this node (opens Tailscale in a new tab):<br>
+        <a id=tsurl target=_blank rel=noopener></a>
+        <button id=tscopy style="background:#30363d;color:#fff;border:0;border-radius:7px;padding:.3rem .7rem;cursor:pointer;margin-top:.3rem">Copy URL</button></div>
+    </div>
+  </details>
 </div>
 
 <main>
@@ -461,6 +476,37 @@ async function runPrompt(text){
 const EXAMPLES=['turn the led on','make the light red','what is 7 plus 5','show the text "hei"','reverse the word robot','the largest of 4 and 9']
 function renderExamples(){$('exs').innerHTML=EXAMPLES.map(e=>'<span class=ex>'+he(e)+'</span>').join('')
   ;[...$('exs').children].forEach((el,i)=>el.onclick=()=>{$('pin').value=EXAMPLES[i];runPrompt(EXAMPLES[i])})}
+
+// --- opt-in: turn this tab into a node on the user's own tailnet (lazy-loaded) ---
+async function connectTailscale(){
+  const st=m=>{$('tsout').style.display='block';$('tsstat').textContent=m}
+  $('tsbtn').disabled=true; st('loading Tailscale client (~321 kB)…')
+  let ts
+  try{ ts=await import('./web/tailscale_wasm.js'); await ts.default() }
+  catch(e){ st('load failed: '+e); $('tsbtn').disabled=false; return }
+  $('tsforget').style.display='inline-block'
+  $('tsforget').onclick=()=>{ ts.forget_node(); localStorage.removeItem('ts_ip'); localStorage.removeItem('ts_authorized'); location.reload() }
+  const ck=async()=>{ const j=await (await fetch('https://controlplane.tailscale.com/key?v=130',{cache:'no-store'})).json(); return (j.publicKey||j.legacyPublicKey||'').replace(/^mkey:/,'') }
+  const attempt=async()=>JSON.parse(await ts.register_once(await ck(),''))
+  const online=async res=>{
+    localStorage.ts_ip=res.ip; localStorage.ts_authorized='1'
+    ts.connect_derp('derp1f.tailscale.com')           // hold the relay + serve the simulator
+    if(ready&&model&&tok) ts.set_model(model,tok)      // reuse the already-loaded model for /ask
+    $('tsauth').style.display='none'
+    st('● online as '+res.ip+' — open http://'+res.ip+'/ from any device on your tailnet to use this demo over the tunnel (keep this tab open).')
+  }
+  st('registering this tab on your tailnet…')
+  let r; try{ r=await attempt() }catch(e){ st('register failed: '+e); $('tsbtn').disabled=false; return }
+  if(r.authorized&&r.ip) return online(r)
+  if(r.authUrl){
+    $('tsauth').style.display='block'; const a=$('tsurl'); a.href=r.authUrl; a.textContent=r.authUrl
+    $('tscopy').onclick=()=>navigator.clipboard.writeText(r.authUrl).then(()=>$('tscopy').textContent='Copied ✓').catch(()=>{})
+    st('open the link to authorize this node, then it comes online…')
+    for(let i=0;i<200;i++){ await new Promise(x=>setTimeout(x,3000)); let p; try{p=await attempt()}catch(e){continue}; if(p.ok!==false&&p.authorized&&p.ip) return online(p) }
+    st('gave up waiting — click Connect Tailscale to retry'); $('tsbtn').disabled=false
+  } else { st('unexpected: '+JSON.stringify(r)); $('tsbtn').disabled=false }
+}
+$('tsbtn').onclick=connectTailscale
 
 async function boot(){
   try{
