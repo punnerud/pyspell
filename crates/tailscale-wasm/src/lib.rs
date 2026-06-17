@@ -328,10 +328,13 @@ async fn register_inner(control_pub_hex: &str, auth_key: &str) -> Result<String,
 
     let (hs, framed_init) =
         noise::start(&machine_priv, &control_pub).map_err(|e| format!("noise start: {e}"))?;
-    let tskey = url_encode_b64(&transport::base64_std(&framed_init));
-    let url = format!("wss://{CONTROL_HOST}/ts2021?tskey={tskey}");
+    // Exact browser control dial (tailscale control/controlhttp + controlhttpcommon):
+    // query param = HandshakeHeaderName "X-Tailscale-Handshake", WS subprotocol =
+    // UpgradeHeaderValue "tailscale-control-protocol". (base64-std init, url-encoded.)
+    let hsval = url_encode_b64(&transport::base64_std(&framed_init));
+    let url = format!("wss://{CONTROL_HOST}/ts2021?X-Tailscale-Handshake={hsval}");
 
-    let stream = ws_connect(&url, "control").await?;
+    let stream = ws_connect(&url, "tailscale-control-protocol").await?;
     let mut conn = transport::AsyncConn::from_stream(stream);
     let (typ, payload) = conn.read_frame().await.map_err(|e| format!("read resp: {e}"))?;
     if typ != noise::MSG_RESPONSE {
