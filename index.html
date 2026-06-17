@@ -175,7 +175,7 @@ Like MicroPython, but two syntaxes, the parser never ships to the device, and En
 <section>
   <h2>An offline AI coding agent, served off the chip</h2>
   <p>Open <code>http://&lt;dongle&gt;/</code> over the tunnel and you get a Cursor-like agent. Type
-  <em>"flash the light"</em>, <em>"show the text &quot;hei og hopp&quot;"</em>, <em>"what is 7 plus 5"</em>,
+  <em>"flash the light"</em>, <em>"show the text &quot;hello&quot;"</em>, <em>"what is 7 plus 5"</em>,
   or <em>"reverse the word robot"</em> — a <strong>~0.45 M-parameter language model (&lt; 500 kB, int8)</strong>
   turns it into PySpell code, <strong>runs it live on the chip</strong>, and shows the result, or the
   physical action (the screen lights up, the RGB&nbsp;LED blinks). Runtime, model, tokenizer and dictionary
@@ -506,7 +506,7 @@ async function runPrompt(text){
   $('oout').innerHTML=h
 }
 
-const EXAMPLES=['turn the led on','make the light red','what is 7 plus 5','show the text "hei"','reverse the word robot','the largest of 4 and 9']
+const EXAMPLES=['turn the led on','make the light red','what is 7 plus 5','show the text "hello"','reverse the word robot','the largest of 4 and 9']
 function renderExamples(){$('exs').innerHTML=EXAMPLES.map(e=>'<span class=ex>'+he(e)+'</span>').join('')
   ;[...$('exs').children].forEach((el,i)=>el.onclick=()=>{$('pin').value=EXAMPLES[i];runPrompt(EXAMPLES[i])})}
 
