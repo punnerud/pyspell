@@ -399,6 +399,14 @@ function save(){LS.ps_code=$('code').value;LS.ps_key=$('key').value;LS.ps_model=
 function render(){$('chat').innerHTML=chat.map(m=>'<div class="m '+(m.role=='user'?'u':'a')+'">'+(m.html||m.content.replace(/</g,'&lt;'))+'</div>').join('');$('chat').scrollTop=1e9}
 function he(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function ccol(c){return c>0.8?'#7ee787':c>0.5?'#e3b341':'#f85149'} // confidence -> green/amber/red
+// Scrollable overlay listing the whole vocabulary the model knows, grouped by POS type.
+async function showVocab(){let wm;try{wm=await ensureWords()}catch(e){return}
+const g={};wm.meta.tokens.forEach((t,i)=>{const w=t.trim();if(/^[A-Za-z]{2,}$/.test(w)){const ty=wm.meta.types[i];(g[ty]=g[ty]||[]).push(w)}})
+let h='<div id=vov style="position:fixed;inset:0;background:#000a;z-index:99;display:flex;align-items:center;justify-content:center" onclick="if(event.target.id==\'vov\')vov.remove()">'
+h+='<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;max-height:80vh;width:min(560px,92vw);overflow:auto;padding:14px;font-size:13px">'
+h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><b>Vocabulary — '+wm.wlist.length+' words the model knows</b><button class=sec onclick=vov.remove()>close</button></div>'
+for(const ty of Object.keys(g).sort())h+='<div style="margin:8px 0"><b style=color:#58a6ff>'+ty+'</b> ('+g[ty].length+'): '+g[ty].sort().map(he).join(', ')+'</div>'
+h+='</div></div>';document.body.insertAdjacentHTML('beforeend',h)}
 // Fully-specified arithmetic: copy the operands+operator VERBATIM from the request into
 // print(...) — the browser does the copy, so digits are never regenerated (and reworded
 // 'calculate' etc. doesn't matter). Returns code or null.
@@ -406,6 +414,24 @@ function genFastPath(instr){const op={'+':'+','-':'-','*':'*','/':'//','plus':'+
 let m=instr.match(/(-?\d+)\s*([+\-*\/])\s*(-?\d+)/);if(m)return 'print('+m[1]+' '+op[m[2]]+' '+m[3]+')'
 m=instr.match(/\b(add|subtract|multiply|divide|plus|minus|times)\b[^\d-]*(-?\d+)\D+?(-?\d+)/i);if(m&&op[m[1].toLowerCase()])return 'print('+m[2]+' '+op[m[1].toLowerCase()]+' '+m[3]+')'
 return null}
+// Auto-evaluate a suggestion in place: pyspell is an EXPRESSION sandbox (no loops/def/
+// assignment, no print), so we extract the runnable expression from the snippet —
+// print(expr)->expr, or a bare expression — and skip anything pyspell can't run or that
+// would touch the network. The browser does the copy; the dongle runs it (2s, sandboxed).
+function runnable(snip){snip=(snip||'').replace(/\s*⟨[^⟩]*⟩\s*$/,'').trim()
+if(!snip||/[\n;]/.test(snip))return null            // single statement only
+const m=snip.match(/^print\((.*)\)$/);if(m)snip=m[1].trim()
+if(!snip||/\b(for|while|def|class|import|lambda|range|print)\b/.test(snip))return null
+if(/(^|[^=!<>])=([^=]|$)/.test(snip))return null    // assignment (keeps == <= >= !=)
+if(/\bfetch(_json)?\b/.test(snip))return null        // no network calls in auto-run
+return snip}
+async function autoEval(snip){const e=runnable(snip);if(!e)return null
+try{const r=await fetch('/run?lang=py&timeout=2',{method:'POST',body:e});const t=(await r.text()).trim();return t||null}catch(_){return null}}
+// Append the live result of message `i`'s snippet as a small green/red ▷ badge.
+async function evalInto(i,snip){const v=await autoEval(snip);if(v==null)return
+const err=/^error:/.test(v)
+chat[i].html=(chat[i].html||he(chat[i].content))+'<div style="margin-top:4px;font-family:ui-monospace,monospace;font-size:12px;color:'+(err?'#f85149':'#7ee787')+'" title="ran live in the pyspell sandbox — 2s, no network">▷ '+he(v)+'</div>'
+chat[i].content+='\n▷ '+v;render();save()}
 render()
 async function run(){save();$('out').textContent='running...';try{const r=await fetch('/run?lang='+$('lang').value+'&timeout=20',{method:'POST',body:$('code').value});$('out').textContent=await r.text()}catch(e){$('out').textContent='error: '+e}}
 function sys(){return 'You are a coding assistant for PySpell: a sandboxed Python/Rust expression subset. Allowed: literals, arithmetic, comparisons, boolean, ternary, lists, strings, builtins (len,abs,min,max,sum,round,int,float,str), fetch_json(url,"a.b.0.c"), json_get, and free vars like free_heap, uptime_s. NOT allowed: def, loops, imports, assignment. Keep replies short; give a single PySpell expression when you give code.'}
@@ -413,9 +439,9 @@ function ask(p){const t=p+':\n'+$('code').value;send(t)}
 async function send(pre){const text=pre||$('msg').value;if(!text)return
 $('msg').value='';chat.push({role:'user',content:text});render();save()
 if($('key').value){await openai()}else{
-const bad=await validate(text);if(bad.length){chat.push({role:'assistant',content:'⚠ outside the model vocabulary: '+bad.join(', ')+' — the local model may not understand these (rephrase with common words).'});render()}
+const bad=await validate(text);if(bad.length){chat.push({role:'assistant',content:'⚠ outside the model vocabulary: '+bad.join(', ')+' — rephrase with common words.',html:'⚠ outside the model vocabulary: <b>'+bad.map(he).join(', ')+'</b> — rephrase with <a style="color:#58a6ff;cursor:pointer;text-decoration:underline" onclick=showVocab()>common words</a>.'});render()}
 if($('code').value.trim()&&/\b(change|rename|instead|replace|swap|make it|count down|upper bound|use the|delete|remove|move|put .* below|everywhere|all occurrences|uses of)\b/i.test(text)){await editLoop(text)}
-else{const fp=genFastPath(text);if(fp){chat.push({role:'assistant',content:fp+'  ⟨copied from your request⟩'});render();save()}else{await local(text)}}}}
+else{const fp=genFastPath(text);if(fp){const j=chat.push({role:'assistant',content:fp+'  ⟨copied from your request⟩'})-1;render();save();await evalInto(j,fp)}else{await local(text)}}}}
 // Phase B: word dictionary + embeddings served from the dongle, for input validation
 // + related-word search (RAG over our OWN vocab — the same table the model thinks in).
 let _wm
@@ -539,7 +565,8 @@ try{const g=new m.mod.Generator(m.model,m.tok,prompt,64,0.9,0.9,Math.floor(Math.
 let p,n=0,html=''
 while((p=g.step())!==undefined){const c=g.confidence;chat[i].content+=p;if(p)html+='<span style="color:'+ccol(c)+'" title="'+Math.round(c*100)+'% sure">'+he(p)+'</span>';chat[i].html=html;if(++n%2==0){render();await new Promise(r=>requestAnimationFrame(r))}}
 chat[i].content=(chat[i].content||'(no output)')+'  ⟨local toy model, offline⟩'
-chat[i].html=(html||'(no output)')+' <span style=opacity:.55>⟨coloured by confidence⟩</span>';render();save()}catch(e){chat[i].content='local gen error: '+e;chat[i].html=null;render()}}
+chat[i].html=(html||'(no output)')+' <span style=opacity:.55>⟨coloured by confidence⟩</span>';render();save()
+await evalInto(i,chat[i].content)}catch(e){chat[i].content='local gen error: '+e;chat[i].html=null;render()}}
 // Clear the chat (with confirm); Verify self-tests the offline agent end-to-end.
 function clr(){if(confirm('Clear chat?')){chat=[];save();render()}}
 async function verify(){const i=chat.push({role:'assistant',content:'⏳ verifying offline agent…'})-1;render()
