@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+data/
+out/
+out*/
+*.img
+*.bin
+*.pt
+*.npz

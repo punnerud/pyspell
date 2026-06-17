@@ -11,10 +11,13 @@ fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| "model-part.img".to_string());
     let img = std::fs::read(&path).expect("read image");
     assert!(img.len() >= 16 && &img[0..4] == b"PSM1", "bad TOC magic");
-    let tok_len = u32::from_le_bytes([img[8], img[9], img[10], img[11]]) as usize;
-    let model_len = u32::from_le_bytes([img[12], img[13], img[14], img[15]]) as usize;
-    let tok_bytes = &img[16..16 + tok_len];
-    let model_bytes = &img[16 + tok_len..16 + tok_len + model_len];
+    let u = |i: usize| u32::from_le_bytes([img[i], img[i + 1], img[i + 2], img[i + 3]]) as usize;
+    let version = u(4);
+    let tok_len = u(8);
+    let model_len = u(12);
+    let base = if version >= 2 { 24 } else { 16 }; // v2 TOC adds wordmeta+embed lengths
+    let tok_bytes = &img[base..base + tok_len];
+    let model_bytes = &img[base + tok_len..base + tok_len + model_len];
     eprintln!("split: tokenizer {tok_len} B, model {model_len} B");
 
     let t = Transformer::new(model_bytes).expect("parse model");

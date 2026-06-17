@@ -1,0 +1,40 @@
+{"en": "add 3 and 5", "py": "print(3 + 5)"}
+{"en": "what is 7 plus 2", "py": "print(7 + 2)"}
+{"en": "subtract 4 from 9", "py": "print(9 - 4)"}
+{"en": "multiply 6 and 7", "py": "print(6 * 7)"}
+{"en": "divide 20 by 4", "py": "print(20 // 4)"}
+{"en": "print the word hello", "py": "print(\"hello\")"}
+{"en": "say world", "py": "print(\"world\")"}
+{"en": "display the word python", "py": "print(\"Python\")"}
+{"en": "set x to 10", "py": "x = 10"}
+{"en": "let count be 0", "py": "count = 0"}
+{"en": "assign 42 to result", "py": "result = 42"}
+{"en": "print numbers from 1 to 5", "py": "for i in range(1, 6):\n    print(i)"}
+{"en": "count from 2 to 8", "py": "for i in range(2, 9):\n    print(i)"}
+{"en": "count down from 5 to 1", "py": "for i in range(5, 0, -1):\n    print(i)"}
+{"en": "define a function add that returns a plus b", "py": "def add(a, b):\n    return a + b"}
+{"en": "write a function total that adds two numbers a and b", "py": "def total(a, b):\n    return a + b"}
+{"en": "make a list of 1, 2, 3", "py": "nums = [1, 2, 3]"}
+{"en": "create a list with 4, 5, 6", "py": "nums = [4, 5, 6]"}
+{"en": "sum the list 1, 2, 3", "py": "print(sum([1, 2, 3]))"}
+{"en": "add up the numbers 2, 4, 6", "py": "print(sum([2, 4, 6]))"}
+{"en": "find the largest of 3, 9, 5", "py": "print(max([3, 9, 5]))"}
+{"en": "find the smallest of 7, 2, 8", "py": "print(min([7, 2, 8]))"}
+{"en": "the length of 1, 2, 3, 4", "py": "print(len([1, 2, 3, 4]))"}
+{"en": "uppercase the word cat", "py": "print(\"cat\".upper())"}
+{"en": "make dog lowercase", "py": "print(\"dog\".lower())"}
+{"en": "check if 8 is greater than 3", "py": "if 8 > 3:\n    print(\"yes\")"}
+{"en": "if 5 is bigger than 9 print yes", "py": "if 5 > 9:\n    print(\"yes\")"}
+{"en": "print each item in the list apple, tree, sun", "py": "for item in [\"apple\", \"tree\", \"sun\"]:\n    print(item)"}
+{"en": "square the number 6", "py": "print(6 ** 2)"}
+{"en": "cube the number 3", "py": "print(3 ** 3)"}
+{"en": "check if 10 is even", "py": "print(\"even\" if 10 % 2 == 0 else \"odd\")"}
+{"en": "is 7 even or odd", "py": "print(\"even\" if 7 % 2 == 0 else \"odd\")"}
+{"en": "reverse the word robot", "py": "print(\"robot\"[::-1])"}
+{"en": "print code backwards", "py": "print(\"code\"[::-1])"}
+{"en": "compute 12 plus 8", "py": "print(12 + 8)"}
+{"en": "set total to 100", "py": "total = 100"}
+{"en": "print the word sun", "py": "print(\"sun\")"}
+{"en": "find the largest of 1, 2, 3", "py": "print(max([1, 2, 3]))"}
+{"en": "count from 1 to 10", "py": "for i in range(1, 11):\n    print(i)"}
+{"en": "multiply 9 and 9", "py": "print(9 * 9)"}
