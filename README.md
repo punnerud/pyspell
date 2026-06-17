@@ -205,6 +205,32 @@ model, not a general LLM — and the *system* beats the model: the browser copie
 literal content the model can't, and the sandbox verifies every result, so the
 practical hit-rate on the target tasks is higher than the raw numbers suggest.
 
+## Your browser as a tailnet node (experimental)
+
+Because our Tailscale implementation (`tailscale-core`) is `no_std` Rust, it compiles to
+**WebAssembly** — so a browser tab can become a real node on **your own** tailnet, with no
+app and no hardware. Browsers have no raw TCP/UDP, so everything rides **WebSocket**:
+the control plane over `wss://controlplane.tailscale.com/ts2021` (subprotocol
+`tailscale-control-protocol`, ts2021 Noise handshake in the `X-Tailscale-Handshake` query),
+and the data plane over **DERP** (subprotocol `derp`). It's **~129 kB** of wasm vs
+Tailscale's multi-MB Go client, and reuses the crate's async control path + the in-tunnel
+`tcp.rs` server verbatim.
+
+Try it: **[`web/tailnet.html`](https://punnerud.github.io/pyspell/web/tailnet.html)** — click
+**Login**, open the Tailscale auth URL it gives you in another window to authorize the node,
+and it comes **online with a `100.x` address**. Your node keys live in *your* browser's
+`localStorage` (a refresh reuses the same node — and the same auth URL — and the node is
+`Ephemeral`, so it auto-cleans when you close the tab). Status:
+
+- **Control plane — done & live:** the tab registers and shows online (verified: `100.100.43.12`).
+- **Data plane (DERP) — in progress:** "Connect DERP" holds the relay and logs peer packets
+  arriving (open your node's IP from your phone to see them).
+- **Inbound serving — next:** WireGuard-decrypt those packets and answer them with the
+  in-browser PySpell server, so your phone reaches your *simulated ESP32* over Tailscale.
+
+Note: a public HTTPS page **can't** reach a *real* device's plain-HTTP `100.x` (mixed
+content) — this works because the node *is* the browser tab. Full write-up: [`tech.md`](tech.md).
+
 ## Sizes (release)
 
 - Standalone PySpell firmware (`firmware/esp32s3`): **460.8 kB** (< 500 kB).

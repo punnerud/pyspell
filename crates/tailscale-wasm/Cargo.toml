@@ -24,6 +24,8 @@ getrandom = { version = "0.2", features = ["custom"] }
 # wasm32-unknown-unknown (feature here + the cfg flag in .cargo/config.toml).
 getrandom_v3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
+# NaCl box for the DERP ClientInfo seal (same config as tailscale-core).
+crypto_box = { version = "0.9", default-features = false, features = ["salsa20", "alloc"] }
 tailscale-core = { path = "../../demo/esp32-tailscale-pyspell/core" }
 
 [dependencies.web-sys]
