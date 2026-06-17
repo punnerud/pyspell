@@ -129,6 +129,45 @@ See `demo/esp32-tailscale-pyspell/PYSPELL-DEMO.md`.
 Verified live over Tailscale (device `tdongle-s3`): `GET /` serves the page;
 `GET /run?lang=py&code=1%2B2*3` → `7`; `lang=rs&code=uptime_ms/1000` → uptime.
 
+## On-device AI coding agent (plain English → live code)
+
+`http://<dongle>/` is a Cursor-like agent: type **"flash the light"**, **"show the
+text \"hei og hopp\""**, **"what is 7 plus 5"**, or **"reverse the word robot"** and a
+**~0.45 M-parameter language model (< 500 kB, int8)** turns it into PySpell code,
+**runs it live on the chip**, and shows the result — or the physical action (the
+screen lights up, the RGB LED blinks). Runtime, model, tokenizer and dictionary are
+all served **from the dongle, offline** — no cloud, no key (OpenAI is optional, behind
+the ⚙).
+
+A model that small only works because of a chain of tricks — **[`tech.md`](tech.md)**
+has the full deep-dive; the headlines:
+
+- **The model points, the browser copies.** A 0.45 M model can't reliably copy
+  arbitrary tokens (numbers, strings, lists), so it isn't asked to. It emits tiny
+  *semantic* directives; the browser copies the literal content verbatim. `calculate
+  3 + 2` → `print(`**3 + 2**`)`; `print "hello world"` → `print("`**hello world**`")`;
+  `change add to subtract` → `@@ + ==> -`. Quoted text is literal content (copied
+  byte-for-byte, excluded from vocab checks).
+- **The device serves the model; the browser runs it.** Inference is WebAssembly,
+  client-side. The 0.5 MB model image streams **off flash a TCP segment at a time**
+  (`BodySource::Flash` + HTTP Range) and is never resident in the chip's ~60 kB heap.
+  Inverted edge inference: the constrained device serves + grades, the browser computes.
+- **Frozen embeddings distilled from a bigger model.** The 512-token vocab is
+  embedded with all-MiniLM (22 M params, via Ollama), PCA'd to 128 dims, folded with a
+  part-of-speech vector, and **frozen** — so the tiny model starts with meaningful word
+  geometry instead of spending params learning it.
+- **The vocabulary is also the dictionary.** Those same 512 tokens + embeddings are
+  served back to the browser for input validation ("outside the model's vocabulary…")
+  and related-word RAG over the model's own vocab.
+- **Instant feedback.** Generated code runs in the 2 s sandbox the moment it appears —
+  result inline as `▷`, or the LED/screen fires. No "Apply".
+
+Device builtins the agent targets: `show("…")` (screen), `led(1)`/`led("red")`/`led(0)`,
+`flash()` (LED), plus `upper/lower/reverse` and the usual math/list builtins — all
+within the sandbox so they auto-run. **Retraining for another language** (translate
+the templates, swap the embedding model, re-curate + train) is documented in
+[`tech.md`](tech.md#retraining-it--your-own-language-or-task).
+
 ## Sizes (release)
 
 - Standalone PySpell firmware (`firmware/esp32s3`): **460.8 kB** (< 500 kB).
