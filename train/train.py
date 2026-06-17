@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import signal
+import sys
 import time
 from dataclasses import asdict, replace
 
@@ -124,6 +125,27 @@ def load_split(data_dir, out_dir, name, tk):
     return np.fromfile(binp, dtype=np.uint16)
 
 
+# --- periodic data augmentation -------------------------------------------------
+# Not fully-live (per-batch) augmentation: every --regen-every steps we re-curate a
+# FRESH set from gen_data (new random phrasings via _aug, new operands) with a new
+# seed, re-tokenize with the EXISTING tokenizer (BPE/vocab/embeddings are frozen after
+# step 0, so token IDs stay valid), and hot-swap the training token stream. The regen
+# runs in a BACKGROUND THREAD so the GPU never stalls — it keeps training on the
+# current data and swaps in the fresh data once it's ready. Over a long run the model
+# sees far more of the generator's ~50k+ unique pairs than a single static dump, with
+# no per-batch overhead. The tokenizer and the frozen embeddings are never rebuilt.
+def regen_train_bin(out_dir, tk, n, curate_args, seed):
+    import subprocess
+    d = os.path.join(out_dir, "regen")
+    os.makedirs(d, exist_ok=True)
+    cmd = [sys.executable, "curate.py", "--n", str(n), "--val", "1",
+           "--out", d, "--seed", str(seed)] + curate_args
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip()[-400:])
+    return build_bin(os.path.join(d, "train.jsonl"), os.path.join(d, "train.bin"), tk)
+
+
 def get_batch(data, bs, seq, device):
     ix = np.random.randint(0, len(data) - seq - 1, size=bs)
     x = np.stack([data[i : i + seq] for i in ix]).astype(np.int64)
@@ -180,6 +202,14 @@ def main():
     ap.add_argument("--eval-interval", type=int, default=500)
     ap.add_argument("--patience", type=int, default=6, help="stop after N evals w/o val improvement")
     ap.add_argument("--device", default=None)
+    # Periodic background data augmentation (0 = off): re-curate fresh data every N
+    # steps in a thread and hot-swap it (BPE/embeddings stay frozen). Keeps a GPU fed
+    # with non-repeating data over a long run. --regen-args is passed verbatim to
+    # curate.py (e.g. "--edit-frac 0.22 --reverse-frac 0.1 --boost 6000 --boost-families 22,23,24,25,26").
+    ap.add_argument("--regen-every", type=int, default=0, help="re-curate fresh train data every N steps (0=off)")
+    ap.add_argument("--regen-n", type=int, default=60000, help="curate --n for each regen")
+    ap.add_argument("--regen-args", default="--edit-frac 0.22 --reverse-frac 0.1 --boost 6000 --boost-families 22,23,24,25,26",
+                    help="extra args passed to curate.py on each regen")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -240,7 +270,29 @@ def main():
     t0 = time.time()
     tok_per_step = bs * cfg.seq_len
     last_log = t0
+    # Background augmentation worker: holds the next freshly-curated token array.
+    import threading
+    regen_box = {"data": None, "thread": None}
+    regen_curate_args = args.regen_args.split() if args.regen_every else []
+
+    def _regen_worker(seed):
+        try:
+            regen_box["data"] = regen_train_bin(args.out, tk, args.regen_n, regen_curate_args, seed)
+        except Exception as e:
+            print(f"[regen] failed (keeping current data): {e}", flush=True)
+
     while step < args.max_steps and (time.time() - t0) / 60.0 < args.max_minutes:
+        # Periodic augmentation: kick off a fresh re-curate in the background, and
+        # hot-swap whenever the previous one is ready — the GPU never waits on it.
+        if args.regen_every and step > 0 and step % args.regen_every == 0:
+            t = regen_box["thread"]
+            if t is None or not t.is_alive():
+                regen_box["thread"] = threading.Thread(target=_regen_worker, args=(1337 + step,), daemon=True)
+                regen_box["thread"].start()
+        if regen_box["data"] is not None:
+            train_data = regen_box["data"]
+            regen_box["data"] = None
+            print(f"[regen] swapped in fresh train data: {len(train_data):,} tokens", flush=True)
         lr = lr_at(step, args.lr, args.warmup, args.decay_iters, args.min_lr)
         for g in opt.param_groups:
             g["lr"] = lr
