@@ -86,15 +86,20 @@ def delex_pair(en, py):
 
 
 def relex(code, nums, strs):
-    """Substitute slot markers in generated code back to the real literals."""
+    """Substitute slot markers in generated code back to the real literals. Markers the
+    model emitted but that have no value (e.g. it over-generated list elements) are
+    dropped along with an adjacent comma, so `[17, 15, #2, #3]` -> `[17, 15]` stays valid."""
     def _sub(m):
         p = m.group(0)
         if p[0] == "#":
             i = int(p[1:])
-            return nums[i] if i < len(nums) else p
+            return nums[i] if i < len(nums) else "\x00"
         i = ord(p[1]) - ord("a")
-        return strs[i] if i < len(strs) else p
-    return _PH_RE.sub(_sub, code)
+        return strs[i] if i < len(strs) else "\x00"
+    s = _PH_RE.sub(_sub, code)
+    s = re.sub(r"\s*,\s*\x00", "", s)
+    s = re.sub(r"\x00\s*,\s*", "", s)
+    return s.replace("\x00", "")
 
 
 if __name__ == "__main__":

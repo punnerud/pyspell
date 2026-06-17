@@ -114,6 +114,10 @@ and the freed vocab budget buys more real words. The contract is shared by train
 markers, so a delex model and the old literal model both just work. This is the general,
 model-driven version of "the model points, the browser copies".
 
+> Retrain it yourself in **~1 h on an M3**, or **~2–3 min for ≈$0.05–0.10 on a cloud GPU**
+> (Modal A10G, ~25× faster) — `train/modal_train.py`, full recipe + measured numbers in
+> [`train/README.md`](train/README.md).
+
 ### Trick 4 — the device never runs the model; the browser does
 
 Inference runs **client-side in WebAssembly** (`crates/tinyllm-wasm`). The dongle is a
