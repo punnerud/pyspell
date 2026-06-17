@@ -100,6 +100,14 @@ pub enum Builtin {
     Led,
     /// `flash()` → blink the device LED a few times. Host-provided capability.
     Flash,
+    /// `upper(s)` → uppercase a string (function form of `.upper()`, which the
+    /// expression evaluator can't parse).
+    Upper,
+    /// `lower(s)` → lowercase a string.
+    Lower,
+    /// `reverse(s)` → a string reversed, or a list reversed (function form of
+    /// `[::-1]`, which the evaluator can't parse).
+    Reverse,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

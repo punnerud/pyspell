@@ -439,6 +439,37 @@ function genFastPath(instr){const op={'+':'+','-':'-','*':'*','/':'//','plus':'+
 let m=instr.match(/(-?\d+)\s*([+\-*\/])\s*(-?\d+)/);if(m)return 'print('+m[1]+' '+op[m[2]]+' '+m[3]+')'
 m=instr.match(/\b(add|subtract|multiply|divide|plus|minus|times)\b[^\d-]*(-?\d+)\D+?(-?\d+)/i);if(m&&op[m[1].toLowerCase()])return 'print('+m[2]+' '+op[m[1].toLowerCase()]+' '+m[3]+')'
 return null}
+// Device commands are near-deterministic from the text, so the browser builds them
+// directly (100% reliable, and screen text is COPIED verbatim — the model can't
+// reproduce arbitrary strings). Mirrors genFastPath. Returns code or null.
+// Pull the target text for a string op: quoted first, else "make X uppercase", else
+// after word/text/sentence, else after the verb.
+function _strArg(t){let m
+if(m=t.match(/"([^"]*)"/))return m[1]
+if(m=t.match(/\bmake\s+(.+?)\s+(?:upper ?case|lower ?case)\b/i))return m[1].trim()
+if(m=t.match(/\b(?:word|text|sentence|string)\s+(?:of\s+)?(.+?)(?:\s+(?:around|backwards))?\s*[?.!]*$/i))return m[1].trim()
+if(m=t.match(/\b(?:reverse|flip|uppercase|lowercase|reversed)\s+(.+?)\s*[?.!]*$/i))return m[1].trim()
+return null}
+function genDeviceFastPath(t){let m,s
+// String ops run FIRST (else the generic quoted path swallows them). The target text
+// is COPIED verbatim — the tiny model can't reproduce arbitrary strings, it mangles
+// them (".upper()" -> "opper()"). reverse()/upper()/lower() are pyspell builtins.
+if(/\b(reverse|flip|backwards|reversed)\b/i.test(t)&&(s=_strArg(t)))return 'print(reverse("'+s+'"))'
+if(/\b(upper ?case|capitali[sz]e)\b/i.test(t)&&(s=_strArg(t)))return 'print(upper("'+s+'"))'
+if(/\b(lower ?case)\b/i.test(t)&&(s=_strArg(t)))return 'print(lower("'+s+'"))'
+// Quoted text is literal CONTENT — copy verbatim. show/display/write/put → screen;
+// print/say/output → print. Anything quoted with no verb defaults to the screen.
+if(m=t.match(/\b(show|display|write|put|print|say|output)\b[^"]*"([^"]*)"/i)){const v=m[1].toLowerCase()
+return (v=='print'||v=='say'||v=='output')?'print("'+m[2]+'")':'show("'+m[2]+'")'}
+if(m=t.match(/^[^"]*"([^"]*)"[^"]*$/))return 'show("'+m[1]+'")'
+if(/\b(uptime|seconds since boot)\b/i.test(t))return 'show(uptime_s)'
+if(/\b(free\s*(?:memory|heap)|memory)\b/i.test(t)&&/\b(show|display|put|what)\b/i.test(t))return 'show(free_heap)'
+if(m=t.match(/\b(?:make|set|turn)\b[^"]*\b(red|green|blue|yellow|white|orange|purple|pink)\b/i))return 'led("'+m[1].toLowerCase()+'")'
+if(/\b(flash|blink)\b/i.test(t)&&/\b(led|light|lamp)\b/i.test(t))return 'flash()'
+if(/\b(led|light|lamp)\b/i.test(t)&&/\bon\b/i.test(t))return 'led(1)'
+if(/\b(led|light|lamp)\b/i.test(t)&&/\boff\b/i.test(t))return 'led(0)'
+if(m=t.match(/(?:show the text|display the text|write|put up)\s+(.+?)(?:\s+on the screen)?\s*$/i)){const s=m[1].replace(/^["']|["']$/g,'').trim();if(s)return 'show("'+s+'")'}
+return null}
 // Auto-evaluate a suggestion in place: pyspell is an EXPRESSION sandbox (no loops/def/
 // assignment, no print), so we extract the runnable expression from the snippet —
 // print(expr)->expr, or a bare expression — and skip anything pyspell can't run or that
@@ -469,7 +500,7 @@ $('msg').value='';chat.push({role:'user',content:text});render();save()
 if($('key').value){await openai()}else{
 const bad=await validate(text);if(bad.length){chat.push({role:'assistant',content:'⚠ outside the model vocabulary: '+bad.join(', ')+' — rephrase with common words.',html:'⚠ outside the model vocabulary: <b>'+bad.map(he).join(', ')+'</b> — rephrase with <a style="color:#58a6ff;cursor:pointer;text-decoration:underline" onclick=showVocab()>common words</a>.'});render()}
 if($('code').value.trim()&&/\b(change|rename|instead|replace|swap|make it|count down|upper bound|use the|delete|remove|move|put .* below|everywhere|all occurrences|uses of)\b/i.test(text)){await editLoop(text)}
-else{const fp=genFastPath(text);if(fp){const j=chat.push({role:'assistant',content:fp+'  ⟨copied from your request⟩'})-1;render();save();await evalInto(j,fp)}else{await local(text)}}}}
+else{const fp=genFastPath(text)||genDeviceFastPath(text);if(fp){const j=chat.push({role:'assistant',content:fp+'  ⟨copied from your request⟩'})-1;render();save();await evalInto(j,fp)}else{await local(text)}}}}
 // Phase B: word dictionary + embeddings served from the dongle, for input validation
 // + related-word search (RAG over our OWN vocab — the same table the model thinks in).
 let _wm
@@ -480,8 +511,12 @@ const words={},wlist=[]
 meta.tokens.forEach((t,i)=>{const w=t.trim().toLowerCase();if(/^[a-z]{2,}$/.test(w)&&!(w in words)){words[w]=i;wlist.push(w)}})
 return _wm={meta,eb,dim:meta.dim,words,wlist}}
 async function validate(text){let wm;try{wm=await ensureWords()}catch(e){return[]}
+// Quoted text is literal CONTENT (copied verbatim, shown/printed as-is) — not an
+// instruction — so don't flag it as out-of-vocabulary. Only the words outside the
+// quotes are the actual command the model has to understand.
+const instr=text.replace(/"[^"]*"/g,' ').replace(/'[^']*'/g,' ')
 const set=new Set(wm.wlist),bad=[]
-for(const w of (text.toLowerCase().match(/[a-z]+/g)||[]))if(w.length>1&&!set.has(w)&&!bad.includes(w))bad.push(w)
+for(const w of (instr.toLowerCase().match(/[a-z]+/g)||[]))if(w.length>1&&!set.has(w)&&!bad.includes(w))bad.push(w)
 return bad}
 function cos(eb,dim,a,b){let d=0,na=0,nb=0;for(let i=0;i<dim;i++){const x=eb[a*dim+i],y=eb[b*dim+i];d+=x*y;na+=x*x;nb+=y*y}return d/(Math.sqrt(na*nb)+1e-9)}
 async function words(q){q=(q||'').trim().toLowerCase();if(!q)return
