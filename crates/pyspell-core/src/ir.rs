@@ -89,6 +89,11 @@ pub enum Builtin {
     /// [`crate::eval::Display`] capability, e.g. the ESP32 screen), returning `x`
     /// so it composes. Errors if no display capability is installed.
     Show,
+    /// `print(x)` → the value itself (single arg), or the args space-joined as a
+    /// string (Python-like). Pure: the program's result is what the host shows, so
+    /// `print(2 + 1)` evaluates to `3`. Lets the model's `print(...)` output run
+    /// verbatim instead of being rejected as an unknown function.
+    Print,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
