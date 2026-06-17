@@ -1,0 +1,21 @@
+[package]
+name = "pyspell-wasm"
+description = "Browser-WASM binding for pyspell-core — evaluate the sandboxed Python/Rust subset in the user's browser (powers the GitHub Pages live demo)"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["morten@punnerud.net"]
+
+[lib]
+crate-type = ["cdylib"]
+
+# The SAME sandboxed evaluator that runs on the host and the ESP32, compiled to wasm32 so
+# the GitHub Pages demo can RUN the Python the tiny model generates — fully in-browser.
+[dependencies]
+wasm-bindgen = "0.2"
+pyspell-core = { path = "../pyspell-core", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

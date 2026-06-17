@@ -31,6 +31,26 @@
   .note{background:#13241b;border:1px solid #1f6f3a;border-radius:9px;padding:.8rem 1rem;color:#b9f0c9}
   footer{text-align:center;color:var(--mut);padding:2rem 1rem;border-top:1px solid var(--bd);margin-top:3rem;font-size:.9rem}
   @media(max-width:640px){.grid{grid-template-columns:1fr}}
+  /* live demo */
+  .demo{max-width:56rem;margin:1.4rem auto 0;padding:0 1rem}
+  .demowrap{display:flex;gap:1.4rem;align-items:flex-start;flex-wrap:wrap}
+  .democol{flex:1;min-width:18rem}
+  #pin{width:100%;padding:.7rem .8rem;font-size:1.05rem;background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:9px}
+  .hint{color:var(--mut);font-size:.85rem;margin:.4rem 0}
+  .out{background:var(--code);border:1px solid var(--bd);border-radius:9px;padding:.8rem;margin-top:.7rem;font-family:ui-monospace,Menlo,monospace;font-size:.95rem;min-height:2.2rem;white-space:pre-wrap;word-break:break-word}
+  .out .lbl{color:var(--mut);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em}
+  .res{color:var(--ok);font-weight:600}
+  .exs{margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.4rem}
+  .ex{cursor:pointer;border:1px solid var(--bd);background:var(--card);color:var(--acc);border-radius:999px;padding:.2rem .65rem;font-size:.82rem}
+  /* stylized T-Dongle ESP32 */
+  .dongle{width:230px;margin:0 auto;background:#0b0e13;border:2px solid #2b3340;border-radius:14px;padding:14px 14px 10px}
+  .scr{height:96px;border-radius:6px;background:#05210f;border:1px solid #14361f;color:#7ee787;font-family:ui-monospace,Menlo,monospace;font-size:13px;padding:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;text-align:center;transition:background .2s}
+  .drow{display:flex;align-items:center;gap:10px;margin-top:10px}
+  .led{width:22px;height:22px;border-radius:50%;background:#222;border:1px solid #333;box-shadow:0 0 0 0 transparent;transition:all .25s}
+  .dcap{color:var(--mut);font-size:.78rem}
+  .usb{width:38px;height:14px;background:#3a4250;border-radius:0 3px 3px 0;margin:8px auto 0}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.15}}
+  .blinking{animation:blink .18s steps(1) 6}
 </style>
 </head>
 <body>
@@ -57,6 +77,27 @@
   </div>
   <p><a href="https://github.com/punnerud/pyspell">View on GitHub →</a></p>
 </header>
+
+<div class="demo">
+  <h2 style="border:0;text-align:center;margin:.2rem 0">Try it live — the model runs in <em>your</em> browser</h2>
+  <p class="hint" style="text-align:center">No install, no device, no cloud. The same ~0.5&nbsp;MB model + sandbox that runs on the ESP32, loaded here as WebAssembly. Type plain English; it writes Python and runs it.</p>
+  <div class="demowrap">
+    <div class="democol">
+      <input id=pin placeholder="loading model…" disabled autocomplete=off spellcheck=false>
+      <div class="exs" id=exs></div>
+      <div class="out" id=oout><span class="lbl">output</span><br><span id=ostat>loading the model (~0.5 MB)…</span></div>
+    </div>
+    <div class="democol" style="flex:0 0 auto">
+      <div class="dongle" title="stylized T-Dongle ESP32-S3">
+        <div class="scr" id=scr>PySpell</div>
+        <div class="drow"><div class="led" id=led></div><div class="dcap">RGB&nbsp;LED</div></div>
+        <div class="usb"></div>
+      </div>
+      <p class="hint" style="text-align:center;margin-top:.5rem">screen + LED react to the code</p>
+    </div>
+  </div>
+  <p class="hint">Runs 100% in your browser. To drive a <em>real</em> ESP32, open the dongle's page on your tailnet (<code>http://&lt;device&gt;/</code>) — a public HTTPS page can't reach a plain-HTTP <code>100.x</code> address (mixed-content), so there's no live link from here. <a href="https://github.com/punnerud/pyspell/blob/main/tech.md">How it works →</a></p>
+</div>
 
 <main>
 
@@ -357,5 +398,84 @@ curl 'http://100.x.y.z/run?lang=py&amp;timeout=10&amp;code=free_heap%20%3E%20100
 <footer>
   PySpell — <a href="https://github.com/punnerud/pyspell">github.com/punnerud/pyspell</a> · MIT
 </footer>
+<script type="module">
+import init, { Generator } from './web/tinyllm_wasm.js'
+import initPy, { run_spell } from './web/pyspell_wasm.js'
+const $ = id => document.getElementById(id)
+const he = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+const ccol = c => c>0.8?'#7ee787':c>0.5?'#e3b341':'#f85149'   // confidence -> green/amber/red
+
+// --- deterministic browser fast-paths (the tiny model can't copy arbitrary tokens, so
+// the browser does it — same logic as the dongle's agent page) ---
+function genFastPath(instr){const op={'+':'+','-':'-','*':'*','/':'//','plus':'+','add':'+','minus':'-','subtract':'-','times':'*','multiply':'*','multiplied':'*','divide':'//','divided':'//'}
+let m=instr.match(/(-?\d+)\s*([+\-*\/])\s*(-?\d+)/);if(m)return 'print('+m[1]+' '+op[m[2]]+' '+m[3]+')'
+m=instr.match(/\b(add|subtract|multiply|divide|plus|minus|times)\b[^\d-]*(-?\d+)\D+?(-?\d+)/i);if(m&&op[m[1].toLowerCase()])return 'print('+m[2]+' '+op[m[1].toLowerCase()]+' '+m[3]+')'
+return null}
+function _strArg(t){let m
+if(m=t.match(/"([^"]*)"/))return m[1]
+if(m=t.match(/\bmake\s+(.+?)\s+(?:upper ?case|lower ?case)\b/i))return m[1].trim()
+if(m=t.match(/\b(?:word|text|sentence|string)\s+(?:of\s+)?(.+?)(?:\s+(?:around|backwards))?\s*[?.!]*$/i))return m[1].trim()
+if(m=t.match(/\b(?:reverse|flip|uppercase|lowercase|reversed)\s+(.+?)\s*[?.!]*$/i))return m[1].trim()
+return null}
+function genDeviceFastPath(t){let m,s
+if(/\b(reverse|flip|backwards|reversed)\b/i.test(t)&&(s=_strArg(t)))return 'print(reverse("'+s+'"))'
+if(/\b(upper ?case|capitali[sz]e)\b/i.test(t)&&(s=_strArg(t)))return 'print(upper("'+s+'"))'
+if(/\b(lower ?case)\b/i.test(t)&&(s=_strArg(t)))return 'print(lower("'+s+'"))'
+if(m=t.match(/\b(show|display|write|put|print|say|output)\b[^"]*"([^"]*)"/i)){const v=m[1].toLowerCase()
+return (v=='print'||v=='say'||v=='output')?'print("'+m[2]+'")':'show("'+m[2]+'")'}
+if(m=t.match(/^[^"]*"([^"]*)"[^"]*$/))return 'show("'+m[1]+'")'
+if(/\b(uptime|seconds since boot)\b/i.test(t))return 'show(uptime_s)'
+if(/\b(free\s*(?:memory|heap)|memory)\b/i.test(t)&&/\b(show|display|put|what)\b/i.test(t))return 'show(free_heap)'
+if(m=t.match(/\b(?:make|set|turn)\b[^"]*\b(red|green|blue|yellow|white|orange|purple|pink)\b/i))return 'led("'+m[1].toLowerCase()+'")'
+if(/\b(flash|blink)\b/i.test(t)&&/\b(led|light|lamp)\b/i.test(t))return 'flash()'
+if(/\b(led|light|lamp)\b/i.test(t)&&/\bon\b/i.test(t))return 'led(1)'
+if(/\b(led|light|lamp)\b/i.test(t)&&/\boff\b/i.test(t))return 'led(0)'
+return null}
+
+let ready=false, model, tok
+async function fetchBytes(u){const r=await fetch(u);if(!r.ok)throw new Error(u+' '+r.status);return new Uint8Array(await r.arrayBuffer())}
+
+function animate(r){const scr=$('scr'),led=$('led')
+  if(r.show!=null){scr.textContent=r.show;clearTimeout(animate._t);animate._t=setTimeout(()=>{scr.textContent='PySpell'},6000)}
+  if(r.led!=null){const c=r.led,col=c==='off'?'#222':(c==='white'?'#fff':c)
+    led.style.background=col;led.style.boxShadow=c==='off'?'none':'0 0 12px 3px '+col}
+  if(r.flash){led.style.background='#fff';led.style.boxShadow='0 0 12px 3px #fff';led.classList.remove('blinking');void led.offsetWidth;led.classList.add('blinking')}}
+
+async function runPrompt(text){
+  if(!ready||!text.trim())return
+  $('ostat')&&($('ostat').textContent='')
+  let code=genFastPath(text)||genDeviceFastPath(text), codeHtml
+  if(code){codeHtml=he(code)+' <span style=opacity:.5>⟨copied verbatim⟩</span>'}
+  else{
+    const g=new Generator(model,tok,text,48,0,0.9,1);let p;code='';codeHtml=''
+    while((p=g.step())!==undefined){const c=g.confidence;code+=p;if(p)codeHtml+='<span style="color:'+ccol(c)+'" title="'+Math.round(c*100)+'% sure">'+he(p)+'</span>'}
+  }
+  let h='<span class=lbl>python (the model wrote this)</span><br><code>'+(codeHtml||'(no output)')+'</code>'
+  try{const r=JSON.parse(run_spell(code,'py'))
+    if(r.ok){h+='<br><span class=lbl>result (run in the sandbox)</span><br><span class=res>'+he(r.result)+'</span>';animate(r)}
+    else h+='<br><span class=lbl>error</span><br>'+he(r.error)
+  }catch(e){h+='<br>run error: '+he(''+e)}
+  $('oout').innerHTML=h
+}
+
+const EXAMPLES=['turn the led on','make the light red','what is 7 plus 5','show the text "hei"','reverse the word robot','the largest of 4 and 9']
+function renderExamples(){$('exs').innerHTML=EXAMPLES.map(e=>'<span class=ex>'+he(e)+'</span>').join('')
+  ;[...$('exs').children].forEach((el,i)=>el.onclick=()=>{$('pin').value=EXAMPLES[i];runPrompt(EXAMPLES[i])})}
+
+async function boot(){
+  try{
+    await Promise.all([init(),initPy()])
+    ;[model,tok]=await Promise.all([fetchBytes('./web/model.bin'),fetchBytes('./web/tokenizer.bin')])
+    ready=true
+    const pin=$('pin');pin.disabled=false;pin.placeholder='Ask in English… e.g. "what is 7 plus 5"'
+    pin.onkeydown=e=>{if(e.key==='Enter')runPrompt(pin.value)}
+    renderExamples()
+    pin.value='turn the led on'
+    await runPrompt('turn the led on')   // show it working immediately
+    pin.focus()
+  }catch(e){const o=$('ostat');if(o)o.textContent='couldn’t load the demo: '+e}
+}
+boot()
+</script>
 </body>
 </html>

@@ -7,7 +7,6 @@
 //! KV variant is a later, swap-in optimization (see the plan), but the math and
 //! the format reader are identical either way.
 
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::format::{Config, Model, ModelError};
@@ -310,6 +309,7 @@ impl<'a> Transformer<'a> {
 mod tests {
     use super::*;
     use crate::format::build_tiny;
+    use alloc::vec;
 
     #[test]
     fn forward_is_finite_and_deterministic() {
