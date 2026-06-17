@@ -43,6 +43,22 @@ pub fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<HttpR
             "text/plain; charset=utf-8",
             run(method, query, body).into_bytes(),
         )),
+        // On-device model inference (spike): POST a prompt to run the tiny model ON the
+        // chip (weights mmap'd from flash, int8 KV cache) in a background worker — slow
+        // (~tens of seconds) but keeps Tailscale + /run serving in parallel. GET to poll.
+        "/generate" => {
+            let out = if method.eq_ignore_ascii_case("POST") {
+                let prompt = String::from_utf8_lossy(body).trim().to_string();
+                if prompt.is_empty() {
+                    "error: empty prompt".to_string()
+                } else {
+                    crate::device_llm::start(prompt)
+                }
+            } else {
+                crate::device_llm::poll()
+            };
+            Some(HttpReply::ok_owned("text/plain; charset=utf-8", out.into_bytes()))
+        }
         // MCP server: JSON-RPC 2.0 over HTTP (Streamable HTTP, stateless). Any MCP
         // agent can point at http://<tailscale-ip>/mcp and call run_pyspell — the
         // microcontroller itself speaks MCP.

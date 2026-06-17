@@ -1,5 +1,15 @@
 # PySpell
 
+> **Why learn to *spell* Python when PySpell can conjure it for you?**
+>
+> "Spell" as in a magic spell: say what you want in plain English and a tiny on-device
+> language model turns it into runnable Python — **100% locally on a $10 ESP32 with
+> 512 kB RAM** (no PSRAM, no cloud, no API key), reachable from anywhere over
+> **Tailscale**. The chip serves a web agent IDE, a native **MCP server** and a **REST
+> API**, runs the code in a sandbox (with live **web-request / `fetch`** support), and
+> drives its own screen + LED — up to **8 parallel** PySpell processes on that same
+> half-megabyte of RAM.
+
 **Toward micro-containers for microcontrollers.** Write a small program in **Rust**
 or **Python** syntax, compile it to a compact IR on a host, and **push it live to an
 ESP32** — reachable over **Tailscale** — where a tiny native evaluator runs it in a
@@ -167,6 +177,33 @@ Device builtins the agent targets: `show("…")` (screen), `led(1)`/`led("red")`
 within the sandbox so they auto-run. **Retraining for another language** (translate
 the templates, swap the embedding model, re-curate + train) is documented in
 [`tech.md`](tech.md#retraining-it--your-own-language-or-task).
+
+### Embeddings & how well it works
+
+The 0.45 M budget is too small to *also* learn what words mean, so it doesn't: the
+input embedding table is **distilled from a bigger model and frozen** — every vocab
+word is embedded with all-MiniLM (22 M params, via Ollama), PCA'd to 128 dims, folded
+with a part-of-speech vector and row-normalized. The transformer only learns to *route*
+those fixed meanings. The same 512 tokens + embeddings are then **served back to the
+browser as a dictionary** — for input validation ("outside the model's vocabulary…")
+and related-word RAG over the model's own vocab. (Full write-up: [`tech.md`](tech.md).)
+
+Measured per category (greedy, model alone; "struct" = right skeleton — literal numbers
+and strings are copied by the browser, not the model):
+
+| Category | Struct ok | Compiles |
+|---|---|---|
+| device (`led`/`show`/`flash`) | 92 % | 95 % |
+| arithmetic & math | 92 % | 100 % |
+| list ops (`sum`/`max`/`min`/`len`) | 99 % | 100 % |
+| string ops (`reverse`/`upper`/`lower`) | 95 % | 100 % |
+| multi-line statements (`for`/`def`/`if`) | 68 % | 57 % |
+
+Honest read: it's strong (92–99 %) on the single-line expression families it's *for*,
+and weak on multi-line blocks (deliberately not the focus). It's a **narrow-domain**
+model, not a general LLM — and the *system* beats the model: the browser copies the
+literal content the model can't, and the sandbox verifies every result, so the
+practical hit-rate on the target tasks is higher than the raw numbers suggest.
 
 ## Sizes (release)
 

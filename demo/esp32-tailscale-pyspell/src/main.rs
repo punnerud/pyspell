@@ -63,6 +63,9 @@ mod jobcount;
 mod display;
 #[cfg(feature = "pyspell")]
 mod actuator;
+// On-device LLM inference (run the model on the chip itself; weights mmap'd from flash).
+#[cfg(feature = "pyspell")]
+mod device_llm;
 
 /// Construct the in-tunnel TCP server, wiring the PySpell route handler when the
 /// `pyspell` feature is on. Used at every peer's connection setup.
