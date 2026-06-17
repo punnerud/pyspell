@@ -445,6 +445,21 @@ fn run_periodic(
     probe_round: &mut u32,
     stun_addr: Option<SocketAddr>,
 ) {
+    // Drive in-tunnel TCP retransmit timers for the streaming HTTP server on the
+    // direct path (RTO go-back-N). Runs every loop iteration (~100 ms) — well under
+    // RTO_BASE (1 s). Mirrors the DERP loop's idle tick.
+    #[cfg(feature = "http-server")]
+    {
+        let now = (unsafe { esp_idf_svc::sys::esp_timer_get_time() } / 1000) as u64;
+        for e in st.tunnels.values_mut() {
+            let addr = e.addr;
+            e.tcp.tick(now, |seg| {
+                let out = e.tun.encrypt(seg);
+                let _ = sock.send_to(&out, addr);
+            });
+        }
+    }
+
     // Pull in any runtime-added targets (derp-upgrade hole-punch candidates).
     if let Some(rx) = rx {
         while let Ok(t) = rx.try_recv() {
@@ -964,15 +979,23 @@ fn handle_decrypted(
         }
     }
 
+    // Streaming HTTP: ACK-clocked + flow-controlled (window = CWND), with RTO
+    // retransmit driven by `run_periodic`'s tick(). The old blast shim fired the
+    // whole response at once, overflowing the UDP send buffer on bodies bigger than
+    // a few segments (the 49 kB wasm / multi-MB model never arrived); streaming caps
+    // in-flight bytes so large responses serve reliably over the direct path too —
+    // same path the DERP loop already uses.
     #[cfg(feature = "http-server")]
     if let Some(e) = st.tunnels.get_mut(&our_index) {
-        let replies = e.tcp.handle(inner);
-        if !replies.is_empty() {
-            for r in &replies {
-                let out = e.tun.encrypt(r);
-                let _ = sock.send_to(&out, src);
-            }
-            println!("dataplane: TCP/HTTP -> sent {} segment(s) to {src}", replies.len());
+        let now = (unsafe { esp_idf_svc::sys::esp_timer_get_time() } / 1000) as u64;
+        let mut sent = 0usize;
+        e.tcp.handle_stream(inner, now, |seg| {
+            let out = e.tun.encrypt(seg);
+            let _ = sock.send_to(&out, src);
+            sent += 1;
+        });
+        if sent > 0 {
+            println!("dataplane: TCP/HTTP -> sent {sent} segment(s) to {src}");
         }
         if let Some(a) = e.tcp.take_action() {
             crate::ui::dispatch_tcp(a);
