@@ -616,6 +616,20 @@ pub(crate) fn apply_builtin(
                 None => Err(DslError::Display("no display capability installed".to_string())),
             }
         }
+        Builtin::Print => {
+            // print(x) → x (so the result is shown); print(a, b, …) → "a b …".
+            if vals.len() == 1 {
+                return Ok(vals.into_iter().next().unwrap());
+            }
+            let mut s = String::new();
+            for (i, v) in vals.iter().enumerate() {
+                if i > 0 {
+                    s.push(' ');
+                }
+                s.push_str(&to_str(v));
+            }
+            Ok(Value::str(&s))
+        }
     }
 }
 
@@ -713,6 +727,7 @@ pub(crate) fn builtin_name(b: Builtin) -> &'static str {
         Builtin::Fetch => "fetch",
         Builtin::FetchJson => "fetch_json",
         Builtin::Show => "show",
+        Builtin::Print => "print",
     }
 }
 
