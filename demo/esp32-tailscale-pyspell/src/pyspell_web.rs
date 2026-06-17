@@ -21,6 +21,12 @@ use tailscale_core::tcp::HttpReply;
 /// Largest accepted program (URL-decoded). Keeps a single request segment bounded.
 const MAX_CODE: usize = 1024;
 
+/// Browser-WASM runtime, embedded in flash (served from `/tinyllm_wasm.js` +
+/// `/tinyllm_wasm_bg.wasm`). Built by `wasm-pack` from `crates/tinyllm-wasm` and
+/// copied into `web/`; regenerate with `wasm-pack build --target web --release`.
+static WASM_JS: &[u8] = include_bytes!("../web/tinyllm_wasm.js");
+static WASM_BG: &[u8] = include_bytes!("../web/tinyllm_wasm_bg.wasm");
+
 pub fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<HttpReply> {
     match path {
         // Served zero-copy from flash (`&'static`) — no per-request page copy.
@@ -53,6 +59,10 @@ pub fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<HttpR
             content_type: "application/octet-stream",
             source,
         }),
+        // Browser-WASM runtime, embedded in flash and served zero-copy so the whole
+        // thing (page + runtime + weights) comes from the dongle — works offline.
+        "/tinyllm_wasm.js" => Some(HttpReply::ok_static("text/javascript; charset=utf-8", WASM_JS)),
+        "/tinyllm_wasm_bg.wasm" => Some(HttpReply::ok_static("application/wasm", WASM_BG)),
         _ => None,
     }
 }
@@ -339,8 +349,11 @@ button{background:#238636;color:#fff;border:0;border-radius:6px;padding:6px 12px
 <header><b>PySpell Agent</b>
 <select id=lang><option value=py>Python</option><option value=rs>Rust</option></select>
 <span style=flex:1></span>
+<span style=opacity:.6>no key → local offline model</span>
 <input id=key type=password placeholder="OpenAI key" size=12>
 <input id=model value=gpt-4o-mini size=10>
+<button class=sec onclick=verify()>Verify</button>
+<button class=sec onclick=clr()>Clear</button>
 <a href="https://punnerud.github.io/pyspell/" target=_blank>docs</a></header>
 <main>
 <div class="pane left"><textarea id=code spellcheck=false></textarea>
@@ -362,9 +375,46 @@ function sys(){return 'You are a coding assistant for PySpell: a sandboxed Pytho
 function ask(p){const t=p+':\n'+$('code').value;send(t)}
 async function send(pre){const text=pre||$('msg').value;if(!text)return
 $('msg').value='';chat.push({role:'user',content:text});render();save()
-const key=$('key').value;if(!key){chat.push({role:'assistant',content:'(set your OpenAI key, top-right)'});render();return}
+if($('key').value){await openai()}else{await local(text)}}
+async function openai(){const key=$('key').value
 const msgs=[{role:'system',content:sys()},{role:'user',content:'Current code:\n'+$('code').value},...chat]
 try{const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+key},body:JSON.stringify({model:$('model').value,messages:msgs})})
 const j=await r.json();const a=j.choices?j.choices[0].message.content:('error: '+JSON.stringify(j).slice(0,200))
 chat.push({role:'assistant',content:a});render();save()}catch(e){chat.push({role:'assistant',content:'error: '+e+' — OpenAI browser CORS? may need a proxy'});render()}}
+// Local, fully-offline backend: the WASM runtime + model + tokenizer all come from
+// the dongle (no internet). Loaded once, then generation streams token-by-token.
+let _ml
+// Fetch a URL with a streaming reader so we can show byte progress, returning the
+// full body as a Uint8Array. (We feed the wasm bytes straight to init, bypassing
+// instantiateStreaming — which could otherwise stall on the in-tunnel stream.)
+async function prog(url,label,set){const r=await fetch(url);if(!r.ok)throw new Error(label+' HTTP '+r.status)
+const total=+(r.headers.get('content-length')||0),rd=r.body.getReader(),cs=[];let got=0
+for(;;){const{done,value}=await rd.read();if(done)break;cs.push(value);got+=value.length
+set('⏳ '+label+' '+(got>>10)+(total?'/'+(total>>10):'')+' KB')}
+const u=new Uint8Array(got);let o=0;for(const c of cs){u.set(c,o);o+=c.length}return u}
+// Load (once) the runtime + model + tokenizer, all from the dongle. Shared by the
+// chat backend and the Verify self-test.
+async function ensureLocal(set){if(_ml)return _ml
+set('⏳ importing runtime js…');const mod=await import('/tinyllm_wasm.js')
+const wasm=await prog('/tinyllm_wasm_bg.wasm','wasm',set)
+set('⏳ instantiating wasm…');await mod.default({module_or_path:wasm})
+const model=await prog('/model','model (once)',set)
+const tok=await prog('/tokenizer','tokenizer',set)
+return _ml={mod,model,tok}}
+async function local(prompt){const i=chat.push({role:'assistant',content:''})-1;render()
+const set=t=>{chat[i].content=t;render()}
+let m;try{m=await ensureLocal(set)}catch(e){set('load failed: '+e+' (flash a model image, or set an OpenAI key)');return}
+set('')
+try{const g=new m.mod.Generator(m.model,m.tok,prompt,64,0.9,0.9,Math.floor(Math.random()*1e9))
+let p,n=0
+while((p=g.step())!==undefined){chat[i].content+=p;if(++n%2==0){render();await new Promise(r=>requestAnimationFrame(r))}}
+chat[i].content=(chat[i].content||'(no output)')+'  ⟨local toy model, offline⟩';render();save()}catch(e){chat[i].content='local gen error: '+e;render()}}
+// Clear the chat (with confirm); Verify self-tests the offline agent end-to-end.
+function clr(){if(confirm('Clear chat?')){chat=[];save();render()}}
+async function verify(){const i=chat.push({role:'assistant',content:'⏳ verifying offline agent…'})-1;render()
+const set=t=>{chat[i].content=t;render()}
+try{const m=await ensureLocal(set)
+const g=new m.mod.Generator(m.model,m.tok,'Once upon a time',8,0.9,0.9,1)
+let out='',p;while((p=g.step())!==undefined)out+=p
+set('✅ agent OK — wasm loaded, model '+(m.model.length>>10)+' KB, tokenizer '+m.tok.length+' B, sample: '+JSON.stringify(out.slice(0,40)));save()}catch(e){set('❌ verify failed: '+e)}}
 </script></body></html>"##;
