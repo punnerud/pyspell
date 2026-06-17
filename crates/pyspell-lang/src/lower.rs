@@ -60,6 +60,9 @@ pub(crate) fn builtin_from(name: &str) -> Result<Builtin, DslError> {
         "print" => Builtin::Print,
         "led" => Builtin::Led,
         "flash" => Builtin::Flash,
+        "upper" => Builtin::Upper,
+        "lower" => Builtin::Lower,
+        "reverse" => Builtin::Reverse,
         _ => return Err(DslError::Forbidden(format!("function `{name}()`"))),
     })
 }

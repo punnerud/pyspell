@@ -695,6 +695,24 @@ pub(crate) fn apply_builtin(
             act.flash()?;
             Ok(Value::Bool(true))
         }
+        Builtin::Upper | Builtin::Lower => {
+            if vals.len() != 1 {
+                return Err(arity_err(vals.len()));
+            }
+            let s = expect_str(&vals[0], name)?;
+            let out = if matches!(b, Builtin::Upper) { s.to_uppercase() } else { s.to_lowercase() };
+            Ok(Value::str(&out))
+        }
+        Builtin::Reverse => {
+            if vals.len() != 1 {
+                return Err(arity_err(vals.len()));
+            }
+            match &vals[0] {
+                Value::Str(s) => Ok(Value::str(&s.chars().rev().collect::<String>())),
+                Value::List(l) => Ok(Value::list(l.iter().rev().cloned())),
+                _ => Err(DslError::Type(alloc::format!("{name}() expects a string or list"))),
+            }
+        }
     }
 }
 
@@ -795,6 +813,9 @@ pub(crate) fn builtin_name(b: Builtin) -> &'static str {
         Builtin::Print => "print",
         Builtin::Led => "led",
         Builtin::Flash => "flash",
+        Builtin::Upper => "upper",
+        Builtin::Lower => "lower",
+        Builtin::Reverse => "reverse",
     }
 }
 
