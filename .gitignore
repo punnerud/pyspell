@@ -12,3 +12,7 @@ demo/esp32-tailscale-pyspell/src/config.rs
 # local agent state
 .claude/
 train/flywheel_state.json
+
+# wasm-pack build output
+crates/*/pkg/
+crates/*/pkg-node/
