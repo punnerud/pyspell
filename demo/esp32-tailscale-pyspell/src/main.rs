@@ -61,6 +61,8 @@ mod local_server;
 mod jobcount;
 #[cfg(feature = "pyspell")]
 mod display;
+#[cfg(feature = "pyspell")]
+mod actuator;
 
 /// Construct the in-tunnel TCP server, wiring the PySpell route handler when the
 /// `pyspell` feature is on. Used at every peer's connection setup.
@@ -561,6 +563,15 @@ fn main() -> Result<()> {
                             Ok(cmd) => match cmd {
                                 UiCommand::LedOn => led(31, 255, 255, 255),
                                 UiCommand::LedOff => led(0, 0, 0, 0),
+                                UiCommand::LedColor { r, g, b } => led(31, b, g, r),
+                                UiCommand::LedFlash => {
+                                    for _ in 0..4 {
+                                        led(31, 255, 255, 255);
+                                        FreeRtos::delay_ms(150);
+                                        led(0, 0, 0, 0);
+                                        FreeRtos::delay_ms(150);
+                                    }
+                                }
                                 UiCommand::BacklightOn => {
                                     let _ = backlight.set_low();
                                     backlight_on = true;

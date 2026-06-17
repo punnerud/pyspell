@@ -206,7 +206,7 @@ fn call_builtin_async<'a, 'b: 'a, E: Env, N: AsyncNet>(
                 let probe = json_probe(&path);
                 net.fetch_extract(&url, &probe).await
             }
-            _ => apply_builtin(b, vals, c.display),
+            _ => apply_builtin(b, vals, c.display, None),
         }
     })
 }

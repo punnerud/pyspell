@@ -25,7 +25,7 @@ pub mod wire;
 
 pub use env::{EmptyEnv, Env, VecEnv};
 pub use error::DslError;
-pub use eval::{run, run_with, Display, Limits, Net};
+pub use eval::{color_rgb, run, run_with, Actuator, Display, Limits, Net};
 pub use eval_async::{run_async, AsyncNet};
 pub use ir::{Program, DEFAULT_MAX_STEPS};
 pub use parse::{parse, Lang};

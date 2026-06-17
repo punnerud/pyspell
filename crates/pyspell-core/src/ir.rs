@@ -94,6 +94,12 @@ pub enum Builtin {
     /// `print(2 + 1)` evaluates to `3`. Lets the model's `print(...)` output run
     /// verbatim instead of being rejected as an unknown function.
     Print,
+    /// `led(x)` → drive the device RGB LED: `led(1)`/`led(true)` white on, `led(0)`
+    /// off, `led("red")` colour on, `led("off")` off. Host-provided
+    /// [`crate::eval::Actuator`] capability; returns its argument.
+    Led,
+    /// `flash()` → blink the device LED a few times. Host-provided capability.
+    Flash,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
