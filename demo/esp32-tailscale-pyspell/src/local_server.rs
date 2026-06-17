@@ -197,6 +197,9 @@ fn stream_reply(stream: &mut TcpStream, reply: HttpReply, req_headers: &[u8]) ->
         "HTTP/1.1 {reason}\r\nContent-Type: {}\r\nContent-Length: {len}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccept-Ranges: bytes\r\n",
         reply.content_type
     );
+    if let Some(cc) = reply.cache_control {
+        head.push_str(&format!("Cache-Control: {cc}\r\n"));
+    }
     if status == 206 {
         head.push_str(&format!(
             "Content-Range: bytes {}-{}/{}\r\n",

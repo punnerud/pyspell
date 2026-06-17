@@ -96,22 +96,31 @@ fn copy_clamped(src: &[u8], off: usize, buf: &mut [u8]) -> usize {
     n
 }
 
-/// A routed HTTP response: status + content type + a (re-readable) body source.
+/// A routed HTTP response: status + content type + a (re-readable) body source,
+/// plus an optional `Cache-Control` value (for immutable assets like the model).
 pub struct HttpReply {
     pub status: u16,
     pub content_type: &'static str,
     pub source: BodySource,
+    pub cache_control: Option<&'static str>,
 }
 
 impl HttpReply {
     /// 200 response served zero-copy from a `&'static` flash slice.
     pub fn ok_static(content_type: &'static str, body: &'static [u8]) -> Self {
-        HttpReply { status: 200, content_type, source: BodySource::Static(body) }
+        HttpReply { status: 200, content_type, source: BodySource::Static(body), cache_control: None }
     }
 
     /// 200 response from a small owned buffer (dynamic output).
     pub fn ok_owned(content_type: &'static str, body: Vec<u8>) -> Self {
-        HttpReply { status: 200, content_type, source: BodySource::Owned(body) }
+        HttpReply { status: 200, content_type, source: BodySource::Owned(body), cache_control: None }
+    }
+
+    /// Set a `Cache-Control` header (e.g. `"public, max-age=604800"`) so a normal
+    /// browser reload serves the asset from cache instead of re-downloading it.
+    pub fn cached(mut self, cache_control: &'static str) -> Self {
+        self.cache_control = Some(cache_control);
+        self
     }
 
     /// Materialise the whole body into a `Vec` — for callers that have a real TCP
@@ -467,13 +476,14 @@ impl TcpServer {
     /// Route the request, parse any `Range:`, render headers, and stage `RespState`.
     fn build_response(&mut self, req: &[u8]) {
         let reply = self.route_request(req);
+        let cc = reply.cache_control;
         let total_body = reply.source.total_len();
         let (status, body_base, content_len) = match parse_range(req, total_body) {
             Ok(None) => (reply.status, 0, total_body),
             Ok(Some((a, b))) => (206, a, b - a + 1),
             Err(()) => (416, 0, 0),
         };
-        let headers = render_headers(status, reply.content_type, body_base, content_len, total_body);
+        let headers = render_headers(status, reply.content_type, body_base, content_len, total_body, cc);
         let hdr_len = headers.len();
         let total_len = hdr_len + content_len;
         self.conn.resp = Some(RespState {
@@ -555,6 +565,7 @@ fn render_headers(
     body_base: usize,
     content_len: usize,
     total: usize,
+    cache_control: Option<&str>,
 ) -> Vec<u8> {
     let reason = match status {
         200 => "OK",
@@ -565,6 +576,9 @@ fn render_headers(
     let mut h = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {content_len}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccept-Ranges: bytes\r\n"
     );
+    if let Some(cc) = cache_control {
+        h.push_str(&format!("Cache-Control: {cc}\r\n"));
+    }
     if status == 206 {
         h.push_str(&format!(
             "Content-Range: bytes {}-{}/{}\r\n",
