@@ -388,7 +388,7 @@ button{background:#238636;color:#fff;border:0;border-radius:6px;padding:6px 12px
 <div class=bar><button onclick=run()>Run</button><button class=sec onclick="ask('Improve this code')">Ask agent</button></div>
 <pre id=out></pre></div>
 <div class=pane><div id=chat></div>
-<div class=crow><input id=msg placeholder="Ask the agent..." onkeydown="if(event.key=='Enter')send()"><button onclick=send()>Send</button></div></div>
+<div class=crow><input id=msg placeholder="Ask the agent..." onkeydown="if(event.key=='Enter')send()"><button onclick=send()>Send</button><button class=sec onclick=applyLast() title="splice the last snippet into the best-matching code line">Apply</button></div></div>
 </main>
 <script>
 const $=id=>document.getElementById(id),LS=localStorage
@@ -426,6 +426,26 @@ const id=wm.words[q]
 if(id===undefined){chat.push({role:'assistant',content:'“'+q+'” is not in the dictionary ('+wm.wlist.length+' words)'});render();return}
 const sc=wm.wlist.filter(w=>w!==q).map(w=>[w,cos(wm.eb,wm.dim,id,wm.words[w])]).sort((a,b)=>b[1]-a[1]).slice(0,8)
 chat.push({role:'assistant',content:'related to “'+q+'”: '+sc.map(x=>x[0]+' ('+x[1].toFixed(2)+')').join(', ')});render()}
+// Line-local edit: the model generates a snippet (its trained task); we find the most
+// relevant existing line by embedding similarity to the request and splice the snippet
+// THERE — never rewriting the whole file. A tiny model can't hold all the code, but the
+// browser does, so retrieval + a local splice keeps it targeted.
+function meanEmb(wm,text){const ids=(text.toLowerCase().match(/[a-z]+/g)||[]).map(w=>wm.words[w]).filter(x=>x!==undefined)
+if(!ids.length)return null;const v=new Float32Array(wm.dim)
+for(const id of ids)for(let i=0;i<wm.dim;i++)v[i]+=wm.eb[id*wm.dim+i]
+return v}
+function cosv(a,b){let d=0,na=0,nb=0;for(let i=0;i<a.length;i++){d+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i]}return d/(Math.sqrt(na*nb)+1e-9)}
+async function applyLast(){
+const u=[...chat].reverse().find(m=>m.role==='user')
+const a=[...chat].reverse().find(m=>m.role==='assistant'&&m.content&&!/^[⚠]|^related to/.test(m.content))
+if(!u||!a){$('out').textContent='nothing to apply';return}
+const snippet=a.content.replace(/\s*⟨[^⟩]*⟩\s*$/,'').trim();if(!snippet)return
+let wm=null;try{wm=await ensureWords()}catch(e){}
+const code=$('code').value,lines=code.split('\n');let best=-1,bestsc=-1
+if(wm){const q=meanEmb(wm,u.content);if(q)lines.forEach((ln,i)=>{const e=meanEmb(wm,ln);if(e){const s=cosv(q,e);if(s>bestsc){bestsc=s;best=i}}})}
+if(best>=0&&bestsc>0.4&&lines[best].trim()){lines[best]=snippet;$('code').value=lines.join('\n');$('out').textContent='replaced line '+(best+1)+' (match '+bestsc.toFixed(2)+')'}
+else{$('code').value=(code.trim()?code.replace(/\s*$/,'')+'\n':'')+snippet;$('out').textContent='inserted at end'}
+save()}
 async function openai(){const key=$('key').value
 const msgs=[{role:'system',content:sys()},{role:'user',content:'Current code:\n'+$('code').value},...chat]
 try{const r=await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+key},body:JSON.stringify({model:$('model').value,messages:msgs})})
