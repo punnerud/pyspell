@@ -39,6 +39,20 @@ pub fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<HttpR
             "application/json",
             mcp_handle(body).into_bytes(),
         )),
+        // Offline browser-WASM model host: the weights + tokenizer stream straight off
+        // the `model` flash partition (never materialised), with HTTP Range — so the
+        // browser fetches the ≤6 MB model from the dongle and runs it with no internet.
+        // `None` (→ 404) until the image is flashed to the partition.
+        "/model" => crate::model_host::model_source().map(|source| HttpReply {
+            status: 200,
+            content_type: "application/octet-stream",
+            source,
+        }),
+        "/tokenizer" => crate::model_host::tokenizer_source().map(|source| HttpReply {
+            status: 200,
+            content_type: "application/octet-stream",
+            source,
+        }),
         _ => None,
     }
 }
