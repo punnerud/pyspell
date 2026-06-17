@@ -21,6 +21,11 @@ use tailscale_core::tcp::HttpReply;
 /// Largest accepted program (URL-decoded). Keeps a single request segment bounded.
 const MAX_CODE: usize = 1024;
 
+/// `Cache-Control` for the immutable offline assets (model, tokenizer, WASM runtime):
+/// a normal reload serves them from the browser cache (no re-download of the multi-MB
+/// model); a hard refresh (Cmd+Shift+R) re-fetches after a model swap.
+const CACHE: &str = "public, max-age=604800";
+
 /// Browser-WASM runtime, embedded in flash (served from `/tinyllm_wasm.js` +
 /// `/tinyllm_wasm_bg.wasm`). Built by `wasm-pack` from `crates/tinyllm-wasm` and
 /// copied into `web/`; regenerate with `wasm-pack build --target web --release`.
@@ -53,16 +58,23 @@ pub fn route(method: &str, path: &str, query: &str, body: &[u8]) -> Option<HttpR
             status: 200,
             content_type: "application/octet-stream",
             source,
+            cache_control: Some(CACHE),
         }),
         "/tokenizer" => crate::model_host::tokenizer_source().map(|source| HttpReply {
             status: 200,
             content_type: "application/octet-stream",
             source,
+            cache_control: Some(CACHE),
         }),
         // Browser-WASM runtime, embedded in flash and served zero-copy so the whole
         // thing (page + runtime + weights) comes from the dongle — works offline.
-        "/tinyllm_wasm.js" => Some(HttpReply::ok_static("text/javascript; charset=utf-8", WASM_JS)),
-        "/tinyllm_wasm_bg.wasm" => Some(HttpReply::ok_static("application/wasm", WASM_BG)),
+        // Cached so a normal reload doesn't re-download them (hard-refresh to update).
+        "/tinyllm_wasm.js" => {
+            Some(HttpReply::ok_static("text/javascript; charset=utf-8", WASM_JS).cached(CACHE))
+        }
+        "/tinyllm_wasm_bg.wasm" => {
+            Some(HttpReply::ok_static("application/wasm", WASM_BG).cached(CACHE))
+        }
         _ => None,
     }
 }
