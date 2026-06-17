@@ -399,6 +399,13 @@ function save(){LS.ps_code=$('code').value;LS.ps_key=$('key').value;LS.ps_model=
 function render(){$('chat').innerHTML=chat.map(m=>'<div class="m '+(m.role=='user'?'u':'a')+'">'+(m.html||m.content.replace(/</g,'&lt;'))+'</div>').join('');$('chat').scrollTop=1e9}
 function he(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function ccol(c){return c>0.8?'#7ee787':c>0.5?'#e3b341':'#f85149'} // confidence -> green/amber/red
+// Fully-specified arithmetic: copy the operands+operator VERBATIM from the request into
+// print(...) — the browser does the copy, so digits are never regenerated (and reworded
+// 'calculate' etc. doesn't matter). Returns code or null.
+function genFastPath(instr){const op={'+':'+','-':'-','*':'*','/':'//','plus':'+','add':'+','minus':'-','subtract':'-','times':'*','multiply':'*','multiplied':'*','divide':'//','divided':'//'}
+let m=instr.match(/(-?\d+)\s*([+\-*\/])\s*(-?\d+)/);if(m)return 'print('+m[1]+' '+op[m[2]]+' '+m[3]+')'
+m=instr.match(/\b(add|subtract|multiply|divide|plus|minus|times)\b[^\d-]*(-?\d+)\D+?(-?\d+)/i);if(m&&op[m[1].toLowerCase()])return 'print('+m[2]+' '+op[m[1].toLowerCase()]+' '+m[3]+')'
+return null}
 render()
 async function run(){save();$('out').textContent='running...';try{const r=await fetch('/run?lang='+$('lang').value+'&timeout=20',{method:'POST',body:$('code').value});$('out').textContent=await r.text()}catch(e){$('out').textContent='error: '+e}}
 function sys(){return 'You are a coding assistant for PySpell: a sandboxed Python/Rust expression subset. Allowed: literals, arithmetic, comparisons, boolean, ternary, lists, strings, builtins (len,abs,min,max,sum,round,int,float,str), fetch_json(url,"a.b.0.c"), json_get, and free vars like free_heap, uptime_s. NOT allowed: def, loops, imports, assignment. Keep replies short; give a single PySpell expression when you give code.'}
@@ -407,7 +414,8 @@ async function send(pre){const text=pre||$('msg').value;if(!text)return
 $('msg').value='';chat.push({role:'user',content:text});render();save()
 if($('key').value){await openai()}else{
 const bad=await validate(text);if(bad.length){chat.push({role:'assistant',content:'⚠ outside the model vocabulary: '+bad.join(', ')+' — the local model may not understand these (rephrase with common words).'});render()}
-if($('code').value.trim()&&/\b(change|rename|instead|replace|swap|make it|count down|upper bound|use the|delete|remove|move|put .* below|everywhere|all occurrences|uses of)\b/i.test(text)){await editLoop(text)}else{await local(text)}}}
+if($('code').value.trim()&&/\b(change|rename|instead|replace|swap|make it|count down|upper bound|use the|delete|remove|move|put .* below|everywhere|all occurrences|uses of)\b/i.test(text)){await editLoop(text)}
+else{const fp=genFastPath(text);if(fp){chat.push({role:'assistant',content:fp+'  ⟨copied from your request⟩'});render();save()}else{await local(text)}}}}
 // Phase B: word dictionary + embeddings served from the dongle, for input validation
 // + related-word search (RAG over our OWN vocab — the same table the model thinks in).
 let _wm
