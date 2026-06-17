@@ -81,6 +81,7 @@ def main():
     ap.add_argument("--val", type=int, default=500)
     ap.add_argument("--seeds", default="seeds.jsonl")
     ap.add_argument("--oversample", type=int, default=8, help="repeat seeds N×")
+    ap.add_argument("--boost", type=int, default=0, help="extra examples from weak families")
     ap.add_argument("--qwen", default=None)
     ap.add_argument("--out", default="data")
     ap.add_argument("--seed", type=int, default=1)
@@ -92,6 +93,9 @@ def main():
     print(f"seeds: {len(seeds)}")
     extra = qwen_paraphrase(seeds, args.qwen) if args.qwen else []
     bulk = [gen_data.gen_example() for _ in range(args.n)]
+    if args.boost:
+        bulk += [gen_data.gen_example(random.choice(gen_data.WEAK_FAMILIES)) for _ in range(args.boost)]
+        print(f"boosted weak families with {args.boost} extra examples")
 
     allp = bulk + (seeds + extra) * args.oversample
     seen, out = set(), []
