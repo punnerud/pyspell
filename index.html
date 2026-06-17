@@ -487,8 +487,35 @@ if(/\b(led|light|lamp)\b/i.test(t)&&/\bon\b/i.test(t))return 'led(1)'
 if(/\b(led|light|lamp)\b/i.test(t)&&/\boff\b/i.test(t))return 'led(0)'
 return null}
 
-let ready=false, model, tok
+let ready=false, model, tok, VOCAB=null
 async function fetchBytes(u){const r=await fetch(u);if(!r.ok)throw new Error(u+' '+r.status);return new Uint8Array(await r.arrayBuffer())}
+
+// --- input validation against the model's OWN vocabulary ---
+// The dictionary IS the vocabulary: the same words the model thinks in. We parse them
+// straight out of tokenizer.bin (llama2.c format: i32 max_len, then per token f32 score,
+// i32 len, bytes[len]) and keep the [a-z]{2,} ones — exactly what the dongle's agent page
+// does (pyspell_web.rs validate()). If the instruction uses words the model has never
+// seen, it can only hallucinate, so we say so instead of running garbage.
+function parseVocab(bytes){
+  const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),dec=new TextDecoder()
+  const words=new Set();let off=4 // skip max_token_length
+  while(off+8<=dv.byteLength){
+    off+=4 // f32 score
+    const len=dv.getInt32(off,true);off+=4
+    if(len<0||off+len>dv.byteLength)break
+    const w=dec.decode(bytes.subarray(off,off+len)).trim().toLowerCase();off+=len
+    if(/^[a-z]{2,}$/.test(w))words.add(w)
+  }
+  return words
+}
+function validate(text){
+  if(!VOCAB)return[]
+  // Quoted text is literal content (copied verbatim), not an instruction — don't flag it.
+  const instr=text.replace(/"[^"]*"/g,' ').replace(/'[^']*'/g,' '),bad=[]
+  for(const w of (instr.toLowerCase().match(/[a-z]+/g)||[]))
+    if(w.length>1&&!VOCAB.has(w)&&!bad.includes(w))bad.push(w)
+  return bad
+}
 
 function resetDevice(){const scr=$('scr'),led=$('led')
   scr.textContent='PySpell';led.style.background='#222';led.style.boxShadow='none';led.classList.remove('blinking')}
@@ -508,6 +535,17 @@ async function runPrompt(text){
   let code=genFastPath(text)||genDeviceFastPath(text), codeHtml
   if(code){codeHtml=he(code)+' <span style=opacity:.5>⟨copied verbatim⟩</span>'}
   else{
+    // No deterministic fast-path → the model must understand the words. If some aren't in
+    // its tiny vocabulary, it can only hallucinate — say so rather than show garbage.
+    const bad=validate(text)
+    if(bad.length){
+      $('oout').innerHTML='<span class=lbl>outside the model’s vocabulary</span><br>'+
+        '⚠ <b>'+bad.map(he).join(', ')+'</b> '+(bad.length>1?'aren’t':'isn’t')+
+        ' in the model’s small vocabulary, so it can’t turn this into code. '+
+        'Try an <span style="opacity:.7">example above</span>, or rephrase with common programming words '+
+        '(<i>add, show, reverse, largest, count, led, flash…</i>).'
+      return
+    }
     const g=new Generator(model,tok,text,48,0,0.9,1);let p;code='';codeHtml=''
     while((p=g.step())!==undefined){const c=g.confidence;code+=p;if(p)codeHtml+='<span style="color:'+ccol(c)+'" title="'+Math.round(c*100)+'% sure">'+he(p)+'</span>'}
   }
@@ -565,6 +603,7 @@ async function boot(){
   try{
     await Promise.all([init(),initPy()])
     ;[model,tok]=await Promise.all([fetchBytes('./web/model.bin'),fetchBytes('./web/tokenizer.bin')])
+    try{VOCAB=parseVocab(tok)}catch(e){VOCAB=null}   // the dictionary = the model's own vocab
     ready=true
     const pin=$('pin');pin.disabled=false;pin.placeholder='Ask in English… e.g. "what is 7 plus 5"'
     pin.onkeydown=e=>{if(e.key==='Enter')runPrompt(pin.value)}
