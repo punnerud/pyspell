@@ -26,6 +26,7 @@ class Config:
     seq_len: int = 512
     tie_classifier: bool = True  # False -> separate learned wcls
     frozen_emb: bool = False     # True -> install + freeze a precomputed input embedding
+    dropout: float = 0.0         # training-only regularization (inference unaffected)
     #   frozen_emb + tie  -> output is a RAG lookup against the frozen dict (no wcls)
     #   frozen_emb + untie-> separate learned classifier over the same vocab
 
@@ -51,7 +52,8 @@ PRESETS = {
     # Curated 512 vocab + frozen semantic+POS input embedding + untied learned
     # classifier. ~0.46M params -> ~479 kB int8 (under 500 kB).
     "full512": Config(dim=128, hidden_dim=256, n_layers=2, n_heads=4, n_kv_heads=4,
-                      vocab_size=512, seq_len=128, tie_classifier=False, frozen_emb=True),
+                      vocab_size=512, seq_len=128, tie_classifier=False, frozen_emb=True,
+                      dropout=0.1),
     # Same, but the classifier IS the frozen embedding (tied): the last layer is a RAG
     # lookup against the dict — model emits an embedding, nearest word wins. Smallest
     # (no separate wcls), fully "embedding in -> model -> embedding lookup".
@@ -122,9 +124,9 @@ class Block(nn.Module):
         v = v.transpose(1, 2)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # scale = 1/sqrt(hd)
         y = y.transpose(1, 2).contiguous().view(B, T, -1)
-        x = x + self.wo(y)
+        x = x + F.dropout(self.wo(y), c.dropout, self.training)
         h = rmsnorm(x, self.ffn_norm)
-        x = x + self.w2(F.silu(self.w1(h)) * self.w3(h))
+        x = x + F.dropout(self.w2(F.silu(self.w1(h)) * self.w3(h)), c.dropout, self.training)
         return x
 
 
