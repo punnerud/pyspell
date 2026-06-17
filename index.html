@@ -48,6 +48,8 @@
     <span class="badge">deny-by-default sandbox</span>
     <span class="badge">live over Tailscale</span>
     <span class="badge">512 kB SRAM · no PSRAM</span>
+    <span class="badge">0.45 M-param model, in-browser</span>
+    <span class="badge">offline AI agent</span>
   </div>
   <p><a href="https://github.com/punnerud/pyspell">View on GitHub →</a></p>
 </header>
@@ -75,6 +77,52 @@
     (Rust) and <code>rustpython-parser</code> (Python). For "type code in a browser and run it on the
     chip", a tiny hand-written parser (a few kB, <code>no_std</code>) builds the same AST on the device.
     Either way: source → AST → evaluate.
+  </div>
+</section>
+
+<section>
+  <h2>An offline AI coding agent, served off the chip</h2>
+  <p>Open <code>http://&lt;dongle&gt;/</code> over the tunnel and you get a Cursor-like agent. Type
+  <em>"flash the light"</em>, <em>"show the text &quot;hei og hopp&quot;"</em>, <em>"what is 7 plus 5"</em>,
+  or <em>"reverse the word robot"</em> — a <strong>~0.45 M-parameter language model (&lt; 500 kB, int8)</strong>
+  turns it into PySpell code, <strong>runs it live on the chip</strong>, and shows the result, or the
+  physical action (the screen lights up, the RGB&nbsp;LED blinks). Runtime, model, tokenizer and dictionary
+  are all served <strong>from the dongle, offline</strong> — no cloud, no key (OpenAI is optional, behind
+  the&nbsp;⚙).</p>
+  <p>A model that small is only useful because of a chain of tricks — the full write-up is in
+  <a href="https://github.com/punnerud/pyspell/blob/main/tech.md"><code>tech.md</code></a>. The headlines:</p>
+  <div class="grid">
+    <div class="card">
+      <h3>The model points, the browser copies</h3>
+      <p>A 0.45 M model can't reliably copy arbitrary tokens (numbers, strings, lists), so it isn't asked
+      to. It emits tiny <em>semantic</em> directives; the browser copies the literal content verbatim.
+      <code>calculate 3 + 2</code> → <code>print(<strong>3 + 2</strong>)</code>; <code>change add to
+      subtract</code> → <code>@@ + ==&gt; -</code>. Quoted text is literal content — copied byte-for-byte,
+      excluded from vocab checks.</p>
+    </div>
+    <div class="card">
+      <h3>The device serves; the browser computes</h3>
+      <p>Inference runs in WebAssembly, client-side. The 0.5 MB model image streams <strong>off flash a
+      TCP segment at a time</strong> (HTTP Range) and is never resident in the chip's ~60 kB heap. Inverted
+      edge inference: the constrained device serves and grades, the browser runs the model.</p>
+    </div>
+    <div class="card">
+      <h3>Frozen embeddings, distilled</h3>
+      <p>The 512-token vocab is embedded with all-MiniLM (22 M params), PCA'd to 128 dims, folded with a
+      part-of-speech vector, and <strong>frozen</strong> — the tiny model starts with meaningful word
+      geometry instead of spending its tiny budget learning it.</p>
+    </div>
+    <div class="card">
+      <h3>The vocabulary is the dictionary</h3>
+      <p>Those same 512 tokens + embeddings are served back to the browser for input validation
+      ("outside the model's vocabulary…") and related-word RAG over the model's own vocabulary.</p>
+    </div>
+  </div>
+  <div class="note">
+    <strong>Retrain it for your language.</strong> The pipeline is small and template-driven: translate the
+    instruction phrasings (an LLM does this well), swap the embedding model for a multilingual one, re-curate
+    and train, then flash. Full guide in
+    <a href="https://github.com/punnerud/pyspell/blob/main/tech.md">tech.md</a>.
   </div>
 </section>
 
