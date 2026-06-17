@@ -18,6 +18,8 @@ use std::future::poll_fn;
 use std::rc::Rc;
 use std::task::{Poll, Waker};
 
+use crypto_box::aead::{Aead, Nonce};
+use crypto_box::{PublicKey, SalsaBox, SecretKey};
 use tailscale_core::platform::AsyncByteStream;
 use tailscale_core::{h2, noise, transport};
 use wasm_bindgen::prelude::*;
@@ -362,6 +364,150 @@ async fn register_inner(control_pub_hex: &str, auth_key: &str) -> Result<String,
         }
     }
     Ok(json_result(status, authorized, &auth_url, &ip))
+}
+
+// --- Phase 1: DERP data-plane client over WebSocket -------------------------
+// DERP frames: [type u8][len u32 BE][payload]. Handshake: server sends FRAME_SERVER_KEY
+// (magic + 32-byte pub); we reply FRAME_CLIENT_INFO (node_pub + nonce + NaCl-boxed JSON).
+// Then peers' WireGuard/disco packets arrive as FRAME_RECV_PACKET (src_node_pub + pkt).
+const FRAME_SERVER_KEY: u8 = 0x01;
+const FRAME_CLIENT_INFO: u8 = 0x02;
+const FRAME_SERVER_INFO: u8 = 0x03;
+const FRAME_RECV_PACKET: u8 = 0x05;
+const FRAME_KEEPALIVE: u8 = 0x06;
+const DERP_MAGIC: &[u8] = b"DERP\xf0\x9f\x94\x91"; // "DERP🔑"
+
+thread_local! {
+    static DERP_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+fn dlog(s: String) {
+    DERP_LOG.with(|l| {
+        let mut v = l.borrow_mut();
+        v.push(s);
+        if v.len() > 60 {
+            let n = v.len() - 60;
+            v.drain(..n);
+        }
+    });
+}
+
+/// Recent DERP log lines (newline-joined) for the UI to poll.
+#[wasm_bindgen]
+pub fn derp_log() -> String {
+    DERP_LOG.with(|l| l.borrow().join("\n"))
+}
+
+fn hex8(b: &[u8]) -> String {
+    b.iter().take(8).map(|x| format!("{x:02x}")).collect()
+}
+
+/// A framed DERP reader/writer over the WebSocket stream (5-byte header).
+struct DerpConn {
+    stream: WsStream,
+    rx: Vec<u8>,
+}
+impl DerpConn {
+    async fn fill_to(&mut self, n: usize) -> Result<(), String> {
+        let mut tmp = [0u8; 4096];
+        while self.rx.len() < n {
+            let r = self.stream.read(&mut tmp).await.map_err(|_| "derp read".to_string())?;
+            if r == 0 {
+                return Err("derp connection closed".into());
+            }
+            self.rx.extend_from_slice(&tmp[..r]);
+        }
+        Ok(())
+    }
+    async fn read_frame(&mut self) -> Result<(u8, Vec<u8>), String> {
+        self.fill_to(5).await?;
+        let typ = self.rx[0];
+        let len = u32::from_be_bytes([self.rx[1], self.rx[2], self.rx[3], self.rx[4]]) as usize;
+        if len > 64 * 1024 {
+            return Err(format!("derp frame too large: {len}"));
+        }
+        self.fill_to(5 + len).await?;
+        let payload = self.rx[5..5 + len].to_vec();
+        self.rx.drain(..5 + len);
+        if self.rx.is_empty() && self.rx.capacity() > 16384 {
+            self.rx.shrink_to_fit();
+        }
+        Ok((typ, payload))
+    }
+    async fn write_frame(&mut self, typ: u8, payload: &[u8]) -> Result<(), String> {
+        let mut f = Vec::with_capacity(5 + payload.len());
+        f.push(typ);
+        f.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        f.extend_from_slice(payload);
+        self.stream.write_all(&f).await.map_err(|_| "derp write".to_string())
+    }
+}
+
+/// Connect to a DERP relay over WebSocket, do the DERP handshake (our node key = DERP
+/// identity), then loop reading frames — logging any peer packets that arrive (proof the
+/// phone can reach this browser node over the tunnel). Phase 2 will WireGuard-decrypt and
+/// serve them. Runs until the connection drops. `derp_host` e.g. "derp1f.tailscale.com".
+#[wasm_bindgen]
+pub async fn connect_derp(derp_host: String) -> String {
+    match derp_inner(&derp_host).await {
+        Ok(s) => s,
+        Err(e) => {
+            dlog(format!("✖ {e}"));
+            json_err(&e)
+        }
+    }
+}
+
+async fn derp_inner(derp_host: &str) -> Result<String, String> {
+    let node_priv = load_or_gen("node");
+    let node_pub = pub_of(&node_priv);
+    let url = format!("wss://{derp_host}/derp");
+    dlog(format!("connecting {url} …"));
+    let stream = ws_connect(&url, "derp").await?;
+    let mut d = DerpConn { stream, rx: Vec::new() };
+
+    let (typ, payload) = d.read_frame().await?;
+    if typ != FRAME_SERVER_KEY || payload.len() < DERP_MAGIC.len() + 32 || &payload[..DERP_MAGIC.len()] != DERP_MAGIC {
+        return Err(format!("bad server-key frame (type {typ}, {} B)", payload.len()));
+    }
+    let mut server_pub = [0u8; 32];
+    server_pub.copy_from_slice(&payload[DERP_MAGIC.len()..DERP_MAGIC.len() + 32]);
+    dlog("got server key; sending client info…".into());
+
+    let json = br#"{"version":2}"#;
+    let bx = SalsaBox::new(&PublicKey::from(server_pub), &SecretKey::from(node_priv));
+    let mut nbytes = [0u8; 24];
+    let _ = web_getrandom(&mut nbytes);
+    let nonce = Nonce::<SalsaBox>::clone_from_slice(&nbytes);
+    let ct = bx.encrypt(&nonce, &json[..]).map_err(|_| "clientinfo seal".to_string())?;
+    let mut ci = Vec::with_capacity(32 + 24 + ct.len());
+    ci.extend_from_slice(&node_pub);
+    ci.extend_from_slice(&nbytes);
+    ci.extend_from_slice(&ct);
+    d.write_frame(FRAME_CLIENT_INFO, &ci).await?;
+    dlog("✅ DERP session up — open your node's IP from the phone and watch for packets".into());
+
+    let mut npkt = 0u32;
+    loop {
+        let (typ, payload) = d.read_frame().await?;
+        match typ {
+            FRAME_RECV_PACKET if payload.len() >= 32 => {
+                let src = &payload[..32];
+                let inner = &payload[32..];
+                let kind = match inner.first() {
+                    Some(1) => "WG init",
+                    Some(2) => "WG resp",
+                    Some(4) => "WG transport",
+                    Some(_) => "disco/other",
+                    None => "empty",
+                };
+                npkt += 1;
+                dlog(format!("📦 recv #{npkt} from {}: {} B [{kind}]", hex8(src), inner.len()));
+            }
+            FRAME_KEEPALIVE => {}
+            FRAME_SERVER_INFO => dlog("server info received".into()),
+            other => dlog(format!("frame 0x{other:02x} ({} B)", payload.len())),
+        }
+    }
 }
 
 /// Clear the persisted node identity (start fresh next time).
