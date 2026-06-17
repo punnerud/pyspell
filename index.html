@@ -39,6 +39,7 @@
   #pin{flex:1;min-width:0;padding:.7rem .8rem;font-size:1.05rem;background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:9px}
   #prun{flex:0 0 auto;padding:.7rem 1.1rem;font-size:1.02rem;font-weight:600;background:var(--ok);color:#06210f;border:0;border-radius:9px;cursor:pointer}
   #prun:disabled{background:var(--bd);color:var(--mut);cursor:default}
+  .resetbtn{background:transparent;color:var(--acc);border:1px solid var(--bd);border-radius:7px;padding:.12rem .55rem;font-size:.8rem;cursor:pointer}
   .hint{color:var(--mut);font-size:.85rem;margin:.4rem 0}
   .out{background:var(--code);border:1px solid var(--bd);border-radius:9px;padding:.8rem;margin-top:.7rem;font-family:ui-monospace,Menlo,monospace;font-size:.95rem;min-height:2.2rem;white-space:pre-wrap;word-break:break-word}
   .out .lbl{color:var(--mut);font-size:.78rem;text-transform:uppercase;letter-spacing:.04em}
@@ -93,7 +94,7 @@
         <div class="drow"><div class="led" id=led></div><div class="dcap">RGB&nbsp;LED</div></div>
         <div class="usb"></div>
       </div>
-      <p class="hint" style="text-align:center;margin-top:.5rem">screen + LED react to the code</p>
+      <p class="hint" style="text-align:center;margin-top:.5rem">screen + LED keep the last result · <button id=preset class="resetbtn">Reset</button></p>
     </div>
   </div>
   <p class="hint">Runs 100% in your browser. Want it reachable from your <em>phone</em>? Use <b>Connect Tailscale</b> below to turn this tab into a private node on your own tailnet. <a href="https://github.com/punnerud/pyspell/blob/main/tech.md">How it works →</a></p>
@@ -489,8 +490,14 @@ return null}
 let ready=false, model, tok
 async function fetchBytes(u){const r=await fetch(u);if(!r.ok)throw new Error(u+' '+r.status);return new Uint8Array(await r.arrayBuffer())}
 
+function resetDevice(){const scr=$('scr'),led=$('led')
+  scr.textContent='PySpell';led.style.background='#222';led.style.boxShadow='none';led.classList.remove('blinking')}
 function animate(r){const scr=$('scr'),led=$('led')
-  if(r.show!=null){scr.textContent=r.show;clearTimeout(animate._t);animate._t=setTimeout(()=>{scr.textContent='PySpell'},6000)}
+  // Default: show the result on the device screen and KEEP it there (no auto-revert).
+  // An explicit show("…") wins; otherwise mirror the run result, unless this was a
+  // pure LED/flash action (then leave the screen as-is so the light is the feedback).
+  if(r.show!=null) scr.textContent=r.show
+  else if(r.led==null && !r.flash && r.result!=null && r.result!=='') scr.textContent=r.result
   if(r.led!=null){const c=r.led,col=c==='off'?'#222':(c==='white'?'#fff':c)
     led.style.background=col;led.style.boxShadow=c==='off'?'none':'0 0 12px 3px '+col}
   if(r.flash){led.style.background='#fff';led.style.boxShadow='0 0 12px 3px #fff';led.classList.remove('blinking');void led.offsetWidth;led.classList.add('blinking')}}
@@ -546,6 +553,7 @@ async function connectTailscale(){
   } else { st('unexpected: '+JSON.stringify(r)); $('tsbtn').disabled=false }
 }
 $('tsbtn').onclick=connectTailscale
+$('preset').onclick=resetDevice
 
 // "How it works ↓" (and any #docs link / direct deep-link) reveals the collapsed docs
 function openDocs(){const d=$('docs');if(d&&!d.open)d.open=true}
