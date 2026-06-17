@@ -21,6 +21,7 @@ import random
 import torch
 
 import bpe as bpemod
+import curate
 import gen_data
 from model import Config, Llama
 from sample import generate
@@ -45,9 +46,50 @@ def compiles(py):
         return False
 
 
+def eval_edit(model, tk, device, n, seed, show):
+    """Edit-mode eval: located (anchor present) / applied-exact / applied-struct / compiles."""
+    random.seed(seed)
+    cases = [gen_data.gen_edit_example() for _ in range(n)]
+    cases = [(en, w, b) for en, w, b in cases if curate.valid_edit(w, b)]
+    loc = ae = astr = comp = 0
+    by, fails = {}, []
+    for en, window, block in cases:
+        m = curate.EDIT_RE.match(block)
+        gold = norm(window.replace(m.group(1), m.group(2), 1))
+        out = generate(model, tk, device, "EDIT " + en + "\n" + window, max_new=48, temperature=0.0)
+        ed = re.search(r"@@ (.*?) ==> (.*?)(?:\n|$)", out)
+        applied = None
+        located = bool(ed) and ed.group(1) in window
+        if located:
+            applied = norm(window.replace(ed.group(1), ed.group(2), 1))
+        loc += located
+        ae += applied == gold
+        s = applied is not None and mask(applied) == mask(gold)
+        c = applied is not None and compiles(applied)
+        astr += s
+        comp += c
+        k = mask(window.replace("\n", " ; "))
+        st = by.setdefault(k, [0, 0])
+        st[1] += 1
+        st[0] += s
+        if not s:
+            fails.append((en, gold, out.strip()))
+    tot = len(cases)
+    print(f"\n=== {tot} edit tests ===")
+    for name, v in (("located", loc), ("exact", ae), ("struct", astr), ("compiles", comp)):
+        print(f"{name:8}: {v}/{tot}  ({100*v//tot}%)")
+    print("\n=== per-template (struct) ===")
+    for k, (ok, t) in sorted(by.items(), key=lambda kv: kv[1][0] / kv[1][1]):
+        print(f"  {ok:3}/{t:<3} {100*ok//t:3}%  {k[:55]}")
+    print(f"\n=== sample failures ({min(show, len(fails))}) ===")
+    for en, gold, out in fails[:show]:
+        print(f"  EN  : {en}\n  GOLD: {gold!r}\n  GOT : {out!r}\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="out")
+    ap.add_argument("--task", choices=["generate", "edit"], default="generate")
     ap.add_argument("--n", type=int, default=400)
     ap.add_argument("--seed", type=int, default=4242, help="!= train seed -> unseen values")
     ap.add_argument("--show", type=int, default=12, help="sample failures to print")
@@ -63,6 +105,10 @@ def main():
     model.eval()
     tk = bpemod.BPE.load_json(os.path.join(args.out, "bpe.json"))
     print(f"eval model step {ck['step']} val {ck.get('best_val', float('nan')):.3f}")
+
+    if args.task == "edit":
+        eval_edit(model, tk, device, args.n, args.seed, args.show)
+        return
 
     # held-out test set: templates with a fresh seed (unseen values) + the seeds file.
     random.seed(args.seed)
