@@ -36,6 +36,27 @@ def generate(model, tk, device, prompt, max_new=96, temperature=0.8, top_p=0.9):
     return tk.decode(out)
 
 
+@torch.no_grad()
+def generate_scored(model, tk, device, prompt, max_new=64):
+    """Greedy generate, returning (text, token_pieces, confs) where conf is the softmax
+    probability of each chosen token — the model's confidence (for uncertainty mining)."""
+    ids = tk.encode(prompt, bos=True)
+    idx = torch.tensor([ids], dtype=torch.long, device=device)
+    out, pieces, confs = [], [], []
+    for _ in range(max_new):
+        logits, _ = model(idx[:, -model.c.seq_len:])
+        logits = logits[0, -1, :]
+        probs = F.softmax(logits, dim=-1)
+        nxt = int(logits.argmax())
+        if nxt in (bpemod.BOS, bpemod.EOS):
+            break
+        out.append(nxt)
+        pieces.append(tk.decode([nxt]))  # decoded text of this token (for literal masking)
+        confs.append(float(probs[nxt]))
+        idx = torch.cat([idx, torch.tensor([[nxt]], device=device)], dim=1)
+    return tk.decode(out), pieces, confs
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="out")

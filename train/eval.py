@@ -24,7 +24,7 @@ import bpe as bpemod
 import curate
 import gen_data
 from model import Config, Llama
-from sample import generate
+from sample import generate, generate_scored
 
 
 def norm(s):
@@ -156,9 +156,72 @@ def eval_directive(model, tk, device, n, seed, show, gen, label):
         print(f"  EN  : {en}\n  GOLD: {gold!r}\n  GOT : {out!r}\n")
 
 
+def _scan_literal(piece, in_str, in_brk):
+    """Is this token a literal (digit / inside a string / inside a list)? Returns
+    (is_literal, new_in_str, new_in_brk) so callers track state across tokens."""
+    lit = in_str or in_brk > 0 or any(c.isdigit() for c in piece)
+    for c in piece:
+        if c == '"':
+            in_str = not in_str
+        elif c == "[":
+            in_brk += 1
+        elif c == "]":
+            in_brk = max(0, in_brk - 1)
+    return lit, in_str, in_brk
+
+
+def eval_harvest(model, tk, device, n, seed, out_dir, conf_thr=0.5):
+    """Uncertainty mining: per-example confidence over NON-literal positions (so the
+    structural number/list ceiling isn't chased) + per-family stats. Writes
+    harvest.json (boost families) and data/hard.jsonl (GOLD pairs only)."""
+    random.seed(seed)
+    fam_conf, fam_fail, hard = {}, {}, []
+    for _ in range(n):
+        fam = random.randint(0, 21)
+        en, py = gen_data.gen_example(fam)
+        text, pieces, confs = generate_scored(model, tk, device, en, max_new=64)
+        in_str, in_brk, nl = False, 0, []
+        for pc, cf in zip(pieces, confs):
+            lit, in_str, in_brk = _scan_literal(pc, in_str, in_brk)
+            if not lit:
+                nl.append(cf)
+        cmin = min(nl) if nl else 1.0
+        ok = mask(norm(text)) == mask(norm(py))
+        fam_conf.setdefault(fam, []).append(cmin)
+        f = fam_fail.setdefault(fam, [0, 0])
+        f[1] += 1
+        f[0] += (not ok)
+        if (not ok) or cmin < conf_thr:
+            hard.append({"en": en, "py": py})
+    rows = []
+    for fam in sorted(fam_conf):
+        cs = fam_conf[fam]
+        avg = sum(cs) / len(cs)
+        fails, tot = fam_fail[fam]
+        rows.append((fam, avg, fails, tot))
+    rows.sort(key=lambda r: r[1])
+    print("fam  avg_conf(non-literal)  fails")
+    for fam, avg, fails, tot in rows:
+        print(f"  {fam:2}   {avg:.3f}   {fails}/{tot}")
+    # DATA-FIXABLE = low non-literal confidence (the model is unsure → more data helps).
+    # STRUCTURAL = confident but failing (can't copy numbers/lists) → don't chase here.
+    boost = [fam for fam, avg, fails, tot in rows if avg < 0.85]
+    structural = [fam for fam, avg, fails, tot in rows if avg >= 0.85 and fails / tot > 0.3]
+    harvest = {"boost_families": boost, "structural_skip": structural, "n_hard": len(hard),
+               "conf_thr": conf_thr, "fam_conf": {f: round(a, 3) for f, a, _, _ in rows}}
+    os.makedirs("data", exist_ok=True)
+    json.dump(harvest, open(os.path.join(out_dir, "harvest.json"), "w"), indent=1)
+    with open(os.path.join("data", "hard.jsonl"), "w") as fh:
+        for h in hard:
+            fh.write(json.dumps(h) + "\n")
+    print(f"harvest: boost (data-fixable) {boost}; structural-skip {structural}; "
+          f"{len(hard)} gold hard cases -> data/hard.jsonl")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="out")
+    ap.add_argument("--harvest", action="store_true", help="uncertainty mining -> harvest.json")
     ap.add_argument("--task", choices=["generate", "edit", "delete", "rename", "move"],
                     default="generate")
     ap.add_argument("--n", type=int, default=400)
@@ -177,6 +240,9 @@ def main():
     tk = bpemod.BPE.load_json(os.path.join(args.out, "bpe.json"))
     print(f"eval model step {ck['step']} val {ck.get('best_val', float('nan')):.3f}")
 
+    if args.harvest:
+        eval_harvest(model, tk, device, args.n, args.seed, args.out)
+        return
     if args.task == "edit":
         eval_edit(model, tk, device, args.n, args.seed, args.show)
         return
