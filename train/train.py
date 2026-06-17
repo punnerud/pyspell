@@ -35,21 +35,32 @@ WORDS = [
     "each", "item", "loop", "over", "square", "cube", "even", "odd", "reverse",
     "backwards", "greater", "bigger", "than", "check", "if", "the", "of", "and", "two",
     "down", "up", "total", "plus", "combine", "in", "for", "else", "while", "result",
-    "value", "num", "temp", "nums", "number", "items", "a", "an",
-    "hello", "world", "cat", "dog", "Lily", "Tom", "apple", "tree", "sun", "code",
-    "Python", "robot",
+    "value", "num", "temp", "nums", "number", "items", "a", "an", "calculate",
+    # natural-phrasing augmentation words (please/can you/i want to/…)
+    "please", "can", "you", "could", "want", "need", "me", "it", "how", "much",
+    "switch", "power", "enable", "disable", "change", "up",
+    # string literals for print("…")/show("…") (programming/device-leaning)
+    "hello", "world", "code", "Python", "robot", "star", "hi", "done", "ok", "yes", "no",
     # math data-aug words
     "percent", "average", "mean", "power", "remainder", "divided", "round", "places",
     "decimals", "larger", "smaller", "double", "raise", "mod",
+    # device words (screen + LED) — let beginners drive the ESP32 in plain English
+    "show", "text", "screen", "light", "led", "turn", "on", "off", "flash", "blink",
+    "memory", "free", "heap", "uptime", "seconds", "boot", "color", "set",
+    "red", "green", "blue", "yellow", "white", "orange", "purple", "pink",
+    # string-op phrasing words
+    "flip", "sentence", "convert", "around", "are", "your",
 ]
 # Python structural tokens (kept as whole pieces for clean code generation).
 PY_TOKENS = [
     "    ", "\n    ", "print(", "def ", "return ", "range(", "for ", " in ", "if ",
     "else", "while ", "):", "()", " = ", " + ", " - ", " * ", " // ", " % ", "len(",
-    "sum(", "max(", "min(", ".upper()", ".lower()", "[::-1]", "== 0", '("', '")',
+    "sum(", "max(", "min(", "upper(", "lower(", "reverse(", "abs(", "== 0", '("', '")',
     ", ", " % 2", " == ", " > ", "** 2", "** 3", ", 0, -1)", "for i in range(",
     "for item in ", "range", "def", "return",
     "round(", "** ", ") / 2", " % ",
+    # device builtins (screen + LED)
+    "show(", "led(", "flash()", "led(1)", "led(0)",
     # Edit-mode protocol tokens (anchor-based directives: replace/delete/move/rename).
     "EDIT", " EDIT", "@@ ", " ==> ", "DEL ", "MOVE ", "RENAME ",
     "EXPLAIN ",  # reverse direction: EXPLAIN <code> -> english

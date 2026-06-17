@@ -245,7 +245,7 @@ def main():
         for _ in range(n_rev * 3):
             if added >= n_rev:
                 break
-            en_t, code = gen_data.gen_example(random.randint(0, 21))
+            en_t, code = gen_data.gen_example(random.randint(0, gen_data.N_FAM))
             if code.isascii() and en_t.isascii() and "EXPLAIN" not in code:
                 out.append(("EXPLAIN " + code, en_t))
                 added += 1
