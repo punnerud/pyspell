@@ -34,7 +34,7 @@ const $=id=>document.getElementById(id)
 $('org').textContent=location.origin
 const set=(id,cls,msg)=>{const e=$(id);e.className='s '+cls;e.textContent=msg}
 let keyOk=false,ctlOk=false,derpOk=false,done=0
-function finish(){if(++done<3)return
+function finish(){if(++done<2)return   // only the two WS probes gate the verdict
   const v=$('verdict')
   if(ctlOk&&derpOk){v.className='s ok';v.textContent='GO — the browser can reach control + DERP from this origin. Worth building the Rust WS transport.'}
   else{v.className='s bad';v.textContent='BLOCKED — '+(!ctlOk?'control WS rejected. ':'')+(!derpOk?'DERP WS rejected. ':'')+'A public-origin browser node may not be possible without a relay / Tailscale-Serve origin.'}
@@ -51,10 +51,10 @@ fetch('https://controlplane.tailscale.com/key?v=130',{cache:'no-store'})
 
 // 2 + 3: WebSocket connect attempts. We only care whether onopen fires (server accepts
 // the handshake from this Origin) vs onerror/onclose with no open.
-function probeWS(url,sid,setflag){
+function probeWS(url,sid,setflag,subproto){
   let opened=false
   try{
-    const ws=new WebSocket(url)
+    const ws=subproto?new WebSocket(url,subproto):new WebSocket(url)
     const t=setTimeout(()=>{if(!opened){set(sid,'bad','timeout — no open in 8s');try{ws.close()}catch(_){}finish()}},8000)
     ws.onopen=()=>{opened=true;setflag(true);clearTimeout(t);set(sid,'ok','CONNECTED (server accepted the WS handshake from this origin)');ws.close();finish()}
     ws.onerror=()=>{if(!opened){/* error fires before close; let close report */}}
@@ -62,7 +62,7 @@ function probeWS(url,sid,setflag){
   }catch(e){set(sid,'bad','threw: '+e);finish()}
 }
 probeWS('wss://controlplane.tailscale.com/ts2021','s-ctl',v=>ctlOk=v)
-probeWS('wss://derp1f.tailscale.com/derp','s-derp',v=>derpOk=v)
+probeWS('wss://derp1f.tailscale.com/derp','s-derp',v=>derpOk=v,'derp')  // DERP needs the `derp` subprotocol
 </script>
 </body>
 </html>
