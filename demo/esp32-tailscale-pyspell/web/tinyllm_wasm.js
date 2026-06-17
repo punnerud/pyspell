@@ -16,6 +16,15 @@ export class Generator {
         wasm.__wbg_generator_free(ptr, 0);
     }
     /**
+     * Softmax probability of the most recently emitted token (0..1) — the model's
+     * confidence, for the UI to colour low-confidence output.
+     * @returns {number}
+     */
+    get confidence() {
+        const ret = wasm.generator_confidence(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * True once generation has finished.
      * @returns {boolean}
      */

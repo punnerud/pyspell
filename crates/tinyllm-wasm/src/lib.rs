@@ -33,6 +33,7 @@ pub struct Generator {
     max_steps: usize,
     sampler: Sampler,
     done: bool,
+    last_confidence: f32,  // softmax prob of the last chosen token (for the UI)
 }
 
 #[wasm_bindgen]
@@ -77,6 +78,7 @@ impl Generator {
             max_steps,
             sampler: Sampler::new(cfg.vocab_size, temperature, topp, seed as u64),
             done: false,
+            last_confidence: 1.0,
         })
     }
 
@@ -104,7 +106,13 @@ impl Generator {
             self.prompt_tokens[self.pos + 1] // still feeding the prompt
         } else {
             let mut logits = self.state.logits().to_vec();
-            self.sampler.sample(&mut logits)
+            let n = self.sampler.sample(&mut logits);
+            // confidence = softmax prob of the chosen token, from the raw logits
+            let raw = self.state.logits();
+            let mx = raw.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let sum: f32 = raw.iter().map(|&v| (v - mx).exp()).sum();
+            self.last_confidence = if sum > 0.0 { (raw[n] - mx).exp() / sum } else { 0.0 };
+            n
         };
         self.pos += 1;
 
@@ -132,6 +140,13 @@ impl Generator {
     #[wasm_bindgen(getter)]
     pub fn pos(&self) -> usize {
         self.pos
+    }
+
+    /// Softmax probability of the most recently emitted token (0..1) — the model's
+    /// confidence, for the UI to colour low-confidence output.
+    #[wasm_bindgen(getter)]
+    pub fn confidence(&self) -> f32 {
+        self.last_confidence
     }
 }
 

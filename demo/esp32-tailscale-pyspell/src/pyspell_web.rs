@@ -396,7 +396,9 @@ $('code').value=LS.ps_code||'free_heap > 100000'
 $('key').value=LS.ps_key||'';$('model').value=LS.ps_model||'gpt-4o-mini'
 let chat=JSON.parse(LS.ps_chat||'[]')
 function save(){LS.ps_code=$('code').value;LS.ps_key=$('key').value;LS.ps_model=$('model').value;LS.ps_chat=JSON.stringify(chat)}
-function render(){$('chat').innerHTML=chat.map(m=>'<div class="m '+(m.role=='user'?'u':'a')+'">'+m.content.replace(/</g,'&lt;')+'</div>').join('');$('chat').scrollTop=1e9}
+function render(){$('chat').innerHTML=chat.map(m=>'<div class="m '+(m.role=='user'?'u':'a')+'">'+(m.html||m.content.replace(/</g,'&lt;'))+'</div>').join('');$('chat').scrollTop=1e9}
+function he(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function ccol(c){return c>0.8?'#7ee787':c>0.5?'#e3b341':'#f85149'} // confidence -> green/amber/red
 render()
 async function run(){save();$('out').textContent='running...';try{const r=await fetch('/run?lang='+$('lang').value+'&timeout=20',{method:'POST',body:$('code').value});$('out').textContent=await r.text()}catch(e){$('out').textContent='error: '+e}}
 function sys(){return 'You are a coding assistant for PySpell: a sandboxed Python/Rust expression subset. Allowed: literals, arithmetic, comparisons, boolean, ternary, lists, strings, builtins (len,abs,min,max,sum,round,int,float,str), fetch_json(url,"a.b.0.c"), json_get, and free vars like free_heap, uptime_s. NOT allowed: def, loops, imports, assignment. Keep replies short; give a single PySpell expression when you give code.'}
@@ -526,9 +528,10 @@ const set=t=>{chat[i].content=t;render()}
 let m;try{m=await ensureLocal(set)}catch(e){set('load failed: '+e+' (flash a model image, or set an OpenAI key)');return}
 set('')
 try{const g=new m.mod.Generator(m.model,m.tok,prompt,64,0.9,0.9,Math.floor(Math.random()*1e9))
-let p,n=0
-while((p=g.step())!==undefined){chat[i].content+=p;if(++n%2==0){render();await new Promise(r=>requestAnimationFrame(r))}}
-chat[i].content=(chat[i].content||'(no output)')+'  ⟨local toy model, offline⟩';render();save()}catch(e){chat[i].content='local gen error: '+e;render()}}
+let p,n=0,html=''
+while((p=g.step())!==undefined){const c=g.confidence;chat[i].content+=p;if(p)html+='<span style="color:'+ccol(c)+'" title="'+Math.round(c*100)+'% sure">'+he(p)+'</span>';chat[i].html=html;if(++n%2==0){render();await new Promise(r=>requestAnimationFrame(r))}}
+chat[i].content=(chat[i].content||'(no output)')+'  ⟨local toy model, offline⟩'
+chat[i].html=(html||'(no output)')+' <span style=opacity:.55>⟨coloured by confidence⟩</span>';render();save()}catch(e){chat[i].content='local gen error: '+e;chat[i].html=null;render()}}
 // Clear the chat (with confirm); Verify self-tests the offline agent end-to-end.
 function clr(){if(confirm('Clear chat?')){chat=[];save();render()}}
 async function verify(){const i=chat.push({role:'assistant',content:'⏳ verifying offline agent…'})-1;render()
