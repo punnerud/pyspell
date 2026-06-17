@@ -27,6 +27,34 @@ pub trait Display {
     fn show(&self, text: &str) -> Result<(), DslError>;
 }
 
+/// Physical-output capability: the device's RGB LED. Like [`Display`], kept out of
+/// the pure evaluator — the host decides whether it is allowed and how it behaves.
+/// Drives `led(x)` and `flash()`.
+pub trait Actuator {
+    /// Set the LED: `on` (with an optional `(r,g,b)` colour; `None` = white) or off.
+    fn led(&self, on: bool, color: Option<(u8, u8, u8)>) -> Result<(), DslError>;
+    /// Flash the LED a few times, then restore.
+    fn flash(&self) -> Result<(), DslError>;
+}
+
+/// Map a colour name to `(r,g,b)`, or `None` if unknown. `"off"`/`"black"` → off
+/// is handled by the caller (returns `(0,0,0)` here).
+pub fn color_rgb(name: &str) -> Option<(u8, u8, u8)> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "red" => (255, 0, 0),
+        "green" => (0, 255, 0),
+        "blue" => (0, 0, 255),
+        "white" => (255, 255, 255),
+        "yellow" => (255, 255, 0),
+        "cyan" => (0, 255, 255),
+        "magenta" | "pink" => (255, 0, 255),
+        "orange" => (255, 90, 0),
+        "purple" | "violet" => (140, 0, 255),
+        "off" | "black" => (0, 0, 0),
+        _ => return None,
+    })
+}
+
 pub trait Net {
     /// Fetch the whole response body as a string.
     fn fetch(&self, url: &str) -> Result<String, DslError>;
@@ -52,6 +80,7 @@ struct Frame<'a> {
     env: &'a dyn Env,
     net: Option<&'a dyn Net>,
     display: Option<&'a dyn Display>,
+    actuator: Option<&'a dyn Actuator>,
     locals: Vec<Value>,
     budget: u32,
     /// Remaining heap-allocation budget in bytes (runaway-memory guard). Charged
@@ -107,6 +136,8 @@ pub struct Limits<'a> {
     pub net: Option<&'a dyn Net>,
     /// Optional display capability for `show` (see [`Display`]).
     pub display: Option<&'a dyn Display>,
+    /// Optional actuator capability for `led`/`flash` (see [`Actuator`]).
+    pub actuator: Option<&'a dyn Actuator>,
 }
 
 impl Default for Limits<'_> {
@@ -117,6 +148,7 @@ impl Default for Limits<'_> {
             deadline: None,
             net: None,
             display: None,
+            actuator: None,
         }
     }
 }
@@ -138,6 +170,7 @@ pub fn run<E: Env>(program: &Program, env: &E) -> Result<Value, DslError> {
             deadline: None,
             net: None,
             display: None,
+            actuator: None,
         },
     )
 }
@@ -150,6 +183,7 @@ pub fn run_with<E: Env>(program: &Program, env: &E, limits: Limits) -> Result<Va
         env,
         net: limits.net,
         display: limits.display,
+        actuator: limits.actuator,
         locals: vec_filled(program.n_locals as usize),
         budget: limits.max_steps,
         mem: limits.max_bytes,
@@ -412,7 +446,7 @@ fn call_builtin(b: Builtin, args: &[Expr], f: &mut Frame) -> Result<Value, DslEr
             let probe = json_probe(&path);
             net.fetch_extract(&url, &probe)
         }
-        _ => apply_builtin(b, vals, f.display),
+        _ => apply_builtin(b, vals, f.display, f.actuator),
     }
 }
 
@@ -444,6 +478,7 @@ pub(crate) fn apply_builtin(
     b: Builtin,
     vals: Vec<Value>,
     display: Option<&dyn Display>,
+    actuator: Option<&dyn Actuator>,
 ) -> Result<Value, DslError> {
     let name = builtin_name(b);
     let arity_err = |got: usize| DslError::Arity { builtin: name, got };
@@ -630,6 +665,36 @@ pub(crate) fn apply_builtin(
             }
             Ok(Value::str(&s))
         }
+        Builtin::Led => {
+            // led(1)/led(true) → white on; led(0) → off; led("red") → colour on;
+            // led("off") → off. Returns the argument so it composes.
+            if vals.len() != 1 {
+                return Err(arity_err(vals.len()));
+            }
+            let act = actuator.ok_or_else(|| {
+                DslError::Display(String::from("no LED capability installed"))
+            })?;
+            let (on, color) = match &vals[0] {
+                Value::Str(s) => match color_rgb(s) {
+                    Some((0, 0, 0)) => (false, None),
+                    Some(rgb) => (true, Some(rgb)),
+                    None => return Err(DslError::Type(alloc::format!("unknown colour `{s}`"))),
+                },
+                v => (as_bool(v)?, None),
+            };
+            act.led(on, color)?;
+            Ok(vals.into_iter().next().unwrap())
+        }
+        Builtin::Flash => {
+            if !vals.is_empty() {
+                return Err(arity_err(vals.len()));
+            }
+            let act = actuator.ok_or_else(|| {
+                DslError::Display(String::from("no LED capability installed"))
+            })?;
+            act.flash()?;
+            Ok(Value::Bool(true))
+        }
     }
 }
 
@@ -728,6 +793,8 @@ pub(crate) fn builtin_name(b: Builtin) -> &'static str {
         Builtin::FetchJson => "fetch_json",
         Builtin::Show => "show",
         Builtin::Print => "print",
+        Builtin::Led => "led",
+        Builtin::Flash => "flash",
     }
 }
 

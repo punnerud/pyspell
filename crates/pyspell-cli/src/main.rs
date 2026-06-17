@@ -118,6 +118,7 @@ fn real_main() -> Result<(), String> {
                 deadline: None,
                 net: Some(&net),
                 display: Some(&disp),
+                actuator: None,
             };
             let value = eval::run_with(&program, &env, limits).map_err(|e| e.to_string())?;
             println!("{}", show(&value));

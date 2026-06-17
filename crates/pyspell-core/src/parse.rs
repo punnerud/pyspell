@@ -566,6 +566,8 @@ fn builtin_from(name: &str) -> Result<Builtin, DslError> {
         "fetch_json" => Builtin::FetchJson,
         "show" => Builtin::Show,
         "print" => Builtin::Print,
+        "led" => Builtin::Led,
+        "flash" => Builtin::Flash,
         _ => return Err(DslError::Forbidden(alloc::format!("function `{name}()`"))),
     })
 }

@@ -104,6 +104,11 @@ fn run(method: &str, query: &str, body: &[u8]) -> String {
     // knows the job needs more can request it (e.g. `?mem=65536`); the device then
     // admits or rejects up front instead of OOM-crashing midway. Default 16 kB.
     let max_bytes = query_get(query, "mem").parse::<i64>().unwrap_or(16384);
+    // Optional screen-revert override (seconds) for show(...) text — the web panel's
+    // ⚙ sets how long custom text stays up before the default screen returns.
+    if let Ok(revert) = query_get(query, "revert").parse::<u32>() {
+        crate::display::set_revert_seconds(revert);
+    }
     // POST → the raw request body is the program; GET → the URL-encoded `code` param.
     let code = if method.eq_ignore_ascii_case("POST") {
         String::from_utf8_lossy(body).trim().to_string()
@@ -151,12 +156,14 @@ fn eval_program(code: &str, lang: Lang, timeout_s: i64, max_bytes_req: i64) -> S
     let env = device_env();
     let net = crate::net::DeviceNet;
     let disp = crate::display::DeviceDisplay;
+    let act = crate::actuator::DeviceActuator;
     let limits = Limits {
         max_steps: 2_000_000,
         max_bytes,
         deadline: Some(&deadline),
         net: Some(&net),
         display: Some(&disp),
+        actuator: Some(&act),
     };
     let out = match eval::run_with(&program, &env, limits) {
         Ok(v) => show(&v),
@@ -390,6 +397,7 @@ button{background:#238636;color:#fff;border:0;border-radius:6px;padding:6px 12px
 <div style="opacity:.7;margin-bottom:10px">Default is the <b>on-device offline model</b> (no internet). Add an OpenAI key to use GPT instead — it stays in this browser only.</div>
 <label>OpenAI key (optional)<input id=key type=password placeholder="sk-… leave empty for on-device" oninput="save();updBackend()"></label>
 <label>OpenAI model<input id=model value=gpt-4o-mini oninput="save();updBackend()"></label>
+<label>Screen timeout (sec) — how long show("…") text stays before the default screen returns<input id=revert type=number min=0 max=120 value=8 oninput=save()></label>
 <button class=sec onclick="$('settings').style.display='none'">Done</button></div>
 <main>
 <div class="pane left"><textarea id=code spellcheck=false></textarea>
@@ -401,7 +409,7 @@ button{background:#238636;color:#fff;border:0;border-radius:6px;padding:6px 12px
 <script>
 const $=id=>document.getElementById(id),LS=localStorage
 $('code').value=LS.ps_code||'free_heap > 100000'
-$('key').value=LS.ps_key||'';$('model').value=LS.ps_model||'gpt-4o-mini'
+$('key').value=LS.ps_key||'';$('model').value=LS.ps_model||'gpt-4o-mini';$('revert').value=LS.ps_revert||'8'
 let chat=JSON.parse(LS.ps_chat||'[]')
 function gear(){const s=$('settings');s.style.display=s.style.display=='block'?'none':'block'}
 // Reflect the active backend in the header badge: on-device by default, GPT if a key is set.
@@ -409,7 +417,10 @@ function updBackend(){const k=$('key').value.trim(),b=$('backend')
 b.textContent=k?('● GPT · '+($('model').value.trim()||'gpt-4o-mini')):'● on-device model'
 b.style.color=k?'#e3b341':'#7ee787'}
 updBackend()
-function save(){LS.ps_code=$('code').value;LS.ps_key=$('key').value;LS.ps_model=$('model').value;LS.ps_chat=JSON.stringify(chat)}
+function save(){LS.ps_code=$('code').value;LS.ps_key=$('key').value;LS.ps_model=$('model').value;LS.ps_revert=$('revert').value;LS.ps_chat=JSON.stringify(chat)}
+// Screen-timeout query suffix for /run, from the ⚙ setting (controls how long
+// show("…") text stays on the device screen before the default view returns).
+function rv(){return '&revert='+(parseInt($('revert').value)||0)}
 function render(){$('chat').innerHTML=chat.map(m=>'<div class="m '+(m.role=='user'?'u':'a')+'">'+(m.html||m.content.replace(/</g,'&lt;'))+'</div>').join('');$('chat').scrollTop=1e9}
 function he(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function ccol(c){return c>0.8?'#7ee787':c>0.5?'#e3b341':'#f85149'} // confidence -> green/amber/red
@@ -440,7 +451,7 @@ if(/(^|[^=!<>])=([^=]|$)/.test(snip))return null    // assignment (keeps == <= >
 if(/\bfetch(_json)?\b/.test(snip))return null        // no network calls in auto-run
 return snip}
 async function autoEval(snip){const e=runnable(snip);if(!e)return null
-try{const r=await fetch('/run?lang=py&timeout=2',{method:'POST',body:e});const t=(await r.text()).trim();return t||null}catch(_){return null}}
+try{const r=await fetch('/run?lang=py&timeout=2'+rv(),{method:'POST',body:e});const t=(await r.text()).trim();return t||null}catch(_){return null}}
 // Append the live result of message `i`'s snippet as a small green/red ▷ badge.
 async function evalInto(i,snip){const v=await autoEval(snip);if(v==null)return
 const err=/^error:/.test(v)
@@ -450,7 +461,7 @@ chat[i].eval=v
 chat[i].html=(chat[i].html||he(chat[i].content))+'<div style="margin-top:4px;font-family:ui-monospace,monospace;font-size:12px;color:'+(err?'#f85149':'#7ee787')+'" title="ran live in the pyspell sandbox — 2s, no network">▷ '+he(v)+'</div>'
 render();save()}
 render()
-async function run(){save();$('out').textContent='running...';try{const r=await fetch('/run?lang='+$('lang').value+'&timeout=20',{method:'POST',body:$('code').value});$('out').textContent=await r.text()}catch(e){$('out').textContent='error: '+e}}
+async function run(){save();$('out').textContent='running...';try{const r=await fetch('/run?lang='+$('lang').value+'&timeout=20'+rv(),{method:'POST',body:$('code').value});$('out').textContent=await r.text()}catch(e){$('out').textContent='error: '+e}}
 function sys(){return 'You are a coding assistant for PySpell: a sandboxed Python/Rust expression subset. Allowed: literals, arithmetic, comparisons, boolean, ternary, lists, strings, builtins (len,abs,min,max,sum,round,int,float,str), fetch_json(url,"a.b.0.c"), json_get, and free vars like free_heap, uptime_s. NOT allowed: def, loops, imports, assignment. Keep replies short; give a single PySpell expression when you give code.'}
 function ask(p){const t=p+':\n'+$('code').value;send(t)}
 async function send(pre){const text=pre||$('msg').value;if(!text)return

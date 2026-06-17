@@ -14,6 +14,10 @@ pub enum UiCommand {
     LedOn,
     /// Turn the underside RGB LED off.
     LedOff,
+    /// Set the underside RGB LED to a colour (full brightness).
+    LedColor { r: u8, g: u8, b: u8 },
+    /// Blink the underside RGB LED a few times, then leave it off.
+    LedFlash,
     /// Backlight on (screen visible).
     BacklightOn,
     /// Backlight off (screen dark, power saving).
