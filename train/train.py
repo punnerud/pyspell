@@ -24,6 +24,7 @@ import torch
 import bpe as bpemod
 import build_embeddings
 import build_types
+import delex
 from model import PRESETS, Config, Llama
 
 # Whole instruction words forced into the vocab (bare + leading-space form, since encode
@@ -66,10 +67,16 @@ PY_TOKENS = [
     "EDIT", " EDIT", "@@ ", " ==> ", "DEL ", "MOVE ", "RENAME ",
     "EXPLAIN ",  # reverse direction: EXPLAIN <code> -> english
 ]
+# Delexicalization slot markers (#0..#7 numbers, &a..&d strings). Force BOTH the bare
+# form (after '('/'[' in Python: `max(#0`) and the space-prefixed form (after a word in
+# English: `of #0`) so each marker is a SINGLE atomic token in either context — the model
+# then learns "carry slot k", never how to spell a literal. See delex.py.
+PLACEHOLDERS = delex.NUM_PH + delex.STR_PH
 # vocab 512 = 3 specials + 256 reserved byte tokens + ~60 base chars leaves ~190 slots,
 # so force the space-prefixed word forms (what appears mid-sentence) + Python tokens; BPE
 # learns line-start/bare words and the rest by frequency.
-FORCED = PY_TOKENS + [" " + w for w in WORDS]
+FORCED = (PY_TOKENS + PLACEHOLDERS + [" " + p for p in PLACEHOLDERS]
+          + [" " + w for w in WORDS])
 
 _STOP = False
 

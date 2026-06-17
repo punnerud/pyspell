@@ -34,6 +34,12 @@ def type_of(piece: bytes) -> str:
     t = s.strip()
     if t == "" or s in ("<unk>", "<s>", "</s>"):
         return "SYM"
+    # Delexicalization slots: a number slot (#k) is a NUM, a string slot (&x) is a STR,
+    # so each marker inherits the right frozen type-bias (see delex.py / build_embeddings).
+    if len(t) == 2 and t[0] == "#" and t[1].isdigit():
+        return "NUM"
+    if len(t) == 2 and t[0] == "&" and t[1].isalpha():
+        return "STR"
     if all(c.isdigit() for c in t):
         return "NUM"
     # any non-letter, non-space char -> structural/symbol (e.g. "print(", " = ", "[::-1]",
