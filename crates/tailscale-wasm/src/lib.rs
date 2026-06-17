@@ -566,6 +566,41 @@ impl DerpConn {
     }
 }
 
+/// Sleep `ms` milliseconds (setTimeout-backed future) — drives the retransmit tick.
+async fn sleep_ms(ms: i32) {
+    let p = js_sys::Promise::new(&mut |resolve, _reject| {
+        if let Some(w) = web_sys::window() {
+            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                resolve.unchecked_ref(),
+                ms,
+            );
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(p).await;
+}
+
+/// Send a DERP send-packet frame directly on a (cloned) WebSocket handle — used by both
+/// the read loop and the retransmit tick (web socket send is sync, so no borrow clash).
+fn derp_send_packet(ws: &web_sys::WebSocket, dst: &[u8; 32], pkt: &[u8]) -> Result<(), ()> {
+    let mut payload = Vec::with_capacity(32 + pkt.len());
+    payload.extend_from_slice(dst);
+    payload.extend_from_slice(pkt);
+    let mut f = Vec::with_capacity(5 + payload.len());
+    f.push(FRAME_SEND_PACKET);
+    f.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    f.extend_from_slice(&payload);
+    ws.send_with_u8_array(&f).map_err(|_| ())
+}
+
+/// Shared node data plane: the in-tunnel TCP server, the per-peer WireGuard tunnels, and
+/// the index of the connection currently being served (for retransmit). Borrowed briefly
+/// (never across an await) by the read loop and the tick task.
+struct NodeState {
+    tcp: tcp::TcpServer,
+    tuns: Vec<(u32, wg::Tunnel, [u8; 32])>, // (our_index, tunnel, peer node key)
+    active: Option<usize>,
+}
+
 /// Connect to a DERP relay over WebSocket, do the DERP handshake (our node key = DERP
 /// identity), then loop reading frames — logging any peer packets that arrive (proof the
 /// phone can reach this browser node over the tunnel). Phase 2 will WireGuard-decrypt and
@@ -611,8 +646,45 @@ async fn derp_inner(derp_host: &str) -> Result<String, String> {
     dlog("✅ DERP session up — open your node's IP from another tailnet device".into());
 
     // Phase 2: be the WireGuard RESPONDER + serve PySpell over the tunnel.
-    let mut tcpsrv = tcp::TcpServer::with_handler(route);
-    let mut tuns: Vec<(u32, wg::Tunnel, [u8; 32])> = Vec::new(); // (our_index, tunnel, peer node)
+    let ws_send = d.stream.ws.clone(); // cloned handle for sends (sync; no read-borrow clash)
+    let state = Rc::new(RefCell::new(NodeState {
+        tcp: tcp::TcpServer::with_handler(route),
+        tuns: Vec::new(),
+        active: None,
+    }));
+
+    // Retransmit tick: a dropped reply segment over DERP would otherwise hang forever
+    // (the peer waits silently). Every 400 ms, re-send any unacked segments of the active
+    // connection — go-back-N from tcp.rs. Runs as its own task; sends via the cloned WS.
+    {
+        let ws = ws_send.clone();
+        let st = state.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                sleep_ms(400).await;
+                let now = now_ms();
+                let mut sends: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+                {
+                    let s = &mut *st.borrow_mut();
+                    if let Some(pos) = s.active {
+                        if pos < s.tuns.len() {
+                            let peer = s.tuns[pos].2;
+                            let tun = &mut s.tuns[pos].1;
+                            let mut outs: Vec<Vec<u8>> = Vec::new();
+                            s.tcp.tick(now, |seg| outs.push(tun.encrypt(seg)));
+                            for o in outs {
+                                sends.push((peer, o));
+                            }
+                        }
+                    }
+                }
+                for (peer, enc) in &sends {
+                    let _ = derp_send_packet(&ws, peer, enc);
+                }
+            }
+        });
+    }
+
     let mut npkt = 0u32;
     loop {
         let (typ, payload) = d.read_frame().await?;
@@ -631,17 +703,17 @@ async fn derp_inner(derp_host: &str) -> Result<String, String> {
         let inner = payload[32..].to_vec();
         match inner.first().copied() {
             Some(1) => {
-                // WireGuard initiation → respond, build the tunnel (we are responder).
                 npkt += 1;
                 let mut ib = [0u8; 4];
                 let _ = web_getrandom(&mut ib);
                 let our_index = u32::from_le_bytes(ib);
                 match wg::consume_initiation(&node_priv, &node_pub, &inner, our_index) {
                     Ok((resp, tun, _peer)) => {
-                        d.send_packet(&src, &resp).await?;
-                        tuns.push((our_index, tun, src));
-                        if tuns.len() > 4 {
-                            tuns.remove(0);
+                        let _ = derp_send_packet(&ws_send, &src, &resp);
+                        let mut s = state.borrow_mut();
+                        s.tuns.push((our_index, tun, src));
+                        if s.tuns.len() > 6 {
+                            s.tuns.remove(0);
                         }
                         dlog(format!("🤝 #{npkt} WG handshake from {} — tunnel up", hex8(&src)));
                     }
@@ -649,36 +721,38 @@ async fn derp_inner(derp_host: &str) -> Result<String, String> {
                 }
             }
             Some(4) => {
-                // WireGuard transport → decrypt, serve via tcp.rs, reply through DERP.
                 if inner.len() < 8 {
                     continue;
                 }
                 let ri = u32::from_le_bytes([inner[4], inner[5], inner[6], inner[7]]);
-                if let Some(pos) = tuns.iter().position(|t| t.0 == ri) {
-                    let plain = match tuns[pos].1.decrypt(&inner) {
-                        Ok(p) => p,
-                        Err(_) => continue,
-                    };
-                    if plain.is_empty() {
-                        continue; // keepalive
-                    }
-                    let now = now_ms();
-                    let mut outs: Vec<Vec<u8>> = Vec::new();
-                    {
-                        let tun = &mut tuns[pos].1;
-                        tcpsrv.handle_stream(&plain, now, |seg| outs.push(tun.encrypt(seg)));
-                    }
-                    let peer = tuns[pos].2;
-                    if !outs.is_empty() {
-                        npkt += 1;
-                        dlog(format!("➡ #{npkt} served {} reply segment(s) to {}", outs.len(), hex8(&peer)));
-                    }
-                    for enc in &outs {
-                        d.send_packet(&peer, enc).await?;
+                let mut sends: Vec<([u8; 32], Vec<u8>)> = Vec::new();
+                {
+                    let s = &mut *state.borrow_mut();
+                    if let Some(pos) = s.tuns.iter().position(|t| t.0 == ri) {
+                        if let Ok(plain) = s.tuns[pos].1.decrypt(&inner) {
+                            if !plain.is_empty() {
+                                s.active = Some(pos);
+                                let now = now_ms();
+                                let peer = s.tuns[pos].2;
+                                let tun = &mut s.tuns[pos].1;
+                                let mut outs: Vec<Vec<u8>> = Vec::new();
+                                s.tcp.handle_stream(&plain, now, |seg| outs.push(tun.encrypt(seg)));
+                                if !outs.is_empty() {
+                                    npkt += 1;
+                                    dlog(format!("➡ #{npkt} served {} segment(s) to {}", outs.len(), hex8(&peer)));
+                                }
+                                for o in outs {
+                                    sends.push((peer, o));
+                                }
+                            }
+                        }
                     }
                 }
+                for (peer, enc) in &sends {
+                    let _ = derp_send_packet(&ws_send, peer, enc);
+                }
             }
-            _ => { /* disco / other — ignored (DERP-relayed, no direct path needed) */ }
+            _ => { /* disco / other — ignored (DERP-relayed) */ }
         }
     }
 }
