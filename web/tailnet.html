@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PySpell — join your own tailnet (browser node)</title>
+<style>
+  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#0d1117;color:#e6edf3;line-height:1.55;padding:1.5rem;max-width:46rem;margin:0 auto}
+  h1{font-size:1.4rem}p{color:#9da7b3}
+  button{background:#238636;color:#fff;border:0;border-radius:7px;padding:.6rem 1.1rem;font-size:1rem;cursor:pointer}
+  button.sec{background:#30363d}
+  .box{border:1px solid #30363d;border-radius:9px;padding:.9rem 1rem;margin:.8rem 0;background:#161b22}
+  .s{font-family:ui-monospace,Menlo,monospace;font-size:.9rem;word-break:break-word}
+  .ok{color:#3fb950}.bad{color:#f85149}.pend{color:#e3b341}
+  a{color:#58a6ff}code{background:#1f2630;padding:.1em .4em;border-radius:5px}
+  #authurl{display:inline-block;margin-top:.4rem}
+</style>
+</head>
+<body>
+<h1>Join your own tailnet — a browser node 🧪</h1>
+<p>This runs our Rust <code>tailscale-core</code> as WebAssembly (≈129&nbsp;kB) so this browser tab
+becomes a node on <b>your own</b> Tailscale tailnet — control + DERP over WebSocket, no app, no hardware.
+Click <b>Login</b>, open the URL it gives you in another window to authorize this node, and it'll come
+online. Your node keys stay in <b>this browser's</b> localStorage (a refresh reuses the same node and the
+same login URL — no new one each time). This is a Phase-0 spike: it proves registration + gets the IP.</p>
+
+<div class="box">
+  <button id="login">Login</button>
+  <button id="forget" class="sec">Forget node</button>
+  <div class="s pend" id="status" style="margin-top:.7rem">loading WASM…</div>
+  <div id="authbox" style="display:none;margin-top:.6rem">
+    Open this to authorize the node (new window):<br>
+    <a id="authurl" target="_blank" rel="noopener"></a>
+    <div class="s pend" id="poll" style="margin-top:.5rem">waiting for you to authorize…</div>
+  </div>
+</div>
+<p class="s" id="ipline"></p>
+
+<script type="module">
+import init, { register_once, forget_node } from './tailscale_wasm.js'
+const $=id=>document.getElementById(id)
+const set=(id,cls,m)=>{const e=$(id);if(e){e.className='s '+cls;e.textContent=m}}
+const LS=localStorage
+let busy=false
+
+async function controlKey(){
+  const r=await fetch('https://controlplane.tailscale.com/key?v=130',{cache:'no-store'})
+  const j=await r.json()
+  const mk=(j.publicKey||j.legacyPublicKey||'')
+  return mk.replace(/^mkey:/,'')
+}
+
+function showResult(res){
+  if(!res.ok){set('status','bad','error: '+res.error);return}
+  if(res.authorized&&res.ip){
+    LS.ts_ip=res.ip;LS.ts_authorized='1';LS.removeItem('ts_auth_url')
+    $('authbox').style.display='none'
+    set('status','ok','● online on your tailnet')
+    $('ipline').innerHTML='Your browser node’s address: <code>'+res.ip+'</code> — reach it from your phone (same tailnet) once Phase 2 lands.'
+    return
+  }
+  if(res.authUrl){
+    LS.ts_auth_url=res.authUrl
+    $('authbox').style.display='block'
+    const a=$('authurl');a.href=res.authUrl;a.textContent=res.authUrl
+    set('status','pend','registered — authorize the node to come online')
+    poll()
+  }else{
+    set('status','pend','registered (status '+res.status+') — waiting for authorization')
+    poll()
+  }
+}
+
+let polling=false
+async function poll(){
+  if(polling)return;polling=true
+  for(let i=0;i<200;i++){
+    await new Promise(r=>setTimeout(r,3000))
+    try{
+      const ck=await controlKey()
+      const res=JSON.parse(await register_once(ck,''))
+      set('poll','pend','checking… ('+(i+1)+')'+(res.authorized?' authorized!':''))
+      if(res.ok&&res.authorized){polling=false;showResult(res);return}
+    }catch(e){set('poll','bad','poll error: '+e)}
+  }
+  polling=false;set('poll','bad','gave up waiting — click Login to retry')
+}
+
+async function doLogin(){
+  if(busy)return;busy=true
+  set('status','pend','fetching control key…')
+  try{
+    const ck=await controlKey()
+    set('status','pend','registering this node over WebSocket…')
+    const res=JSON.parse(await register_once(ck,''))
+    showResult(res)
+  }catch(e){set('status','bad','failed: '+e)}
+  busy=false
+}
+
+async function boot(){
+  try{await init()}catch(e){set('status','bad','WASM load failed: '+e);return}
+  $('login').onclick=doLogin
+  $('forget').onclick=()=>{forget_node();LS.removeItem('ts_auth_url');LS.removeItem('ts_ip');LS.removeItem('ts_authorized');location.reload()}
+  // resume across refresh: same node keys persist in the WASM's localStorage
+  if(LS.ts_authorized==='1'&&LS.ts_ip){
+    set('status','ok','● online on your tailnet (cached) — re-verifying…')
+    $('ipline').innerHTML='Your browser node’s address: <code>'+LS.ts_ip+'</code>'
+    doLogin()  // re-register to confirm still online
+  }else if(LS.ts_auth_url){
+    $('authbox').style.display='block'
+    const a=$('authurl');a.href=LS.ts_auth_url;a.textContent=LS.ts_auth_url
+    set('status','pend','you have a pending node — open the saved URL to authorize, or click Login')
+    poll()
+  }else{
+    set('status','pend','ready — click Login to register this browser as a node on your tailnet')
+  }
+}
+boot()
+</script>
+</body>
+</html>

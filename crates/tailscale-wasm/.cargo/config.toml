@@ -1,0 +1,4 @@
+# getrandom 0.3 (via snow) needs this cfg to use the browser crypto backend on
+# wasm32-unknown-unknown (the `wasm_js` feature alone is insufficient — see getrandom docs).
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

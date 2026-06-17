@@ -178,6 +178,14 @@ pub async fn connect_and_upgrade_async<S: AsyncByteStream>(
 }
 
 impl<S: AsyncByteStream> AsyncConn<S> {
+    /// Wrap an already-upgraded stream where the HTTP→ts2021 upgrade happened OUT OF BAND
+    /// — e.g. a browser WebSocket dialed at `/ts2021?tskey=<base64(init)>` with
+    /// subprotocol `control` (the WS handshake replaces the HTTP/1.1 POST, and the Noise
+    /// init rode in the query). After this, `read_frame` reads the server's MSG_RESPONSE.
+    pub fn from_stream(stream: S) -> Self {
+        AsyncConn { stream, rx: Vec::new() }
+    }
+
     async fn fill_to(&mut self, n: usize) -> Result<()> {
         let mut tmp = [0u8; 2048];
         while self.rx.len() < n {

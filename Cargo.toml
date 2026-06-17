@@ -23,6 +23,7 @@ exclude = [
     # the host `cargo build`/`test` (different target + wasm-bindgen).
     "crates/tinyllm-wasm",
     "crates/pyspell-wasm",
+    "crates/tailscale-wasm",
 ]
 
 [workspace.package]
