@@ -38,6 +38,9 @@ WORDS = [
     "value", "num", "temp", "nums", "number", "items", "a", "an",
     "hello", "world", "cat", "dog", "Lily", "Tom", "apple", "tree", "sun", "code",
     "Python", "robot",
+    # math data-aug words
+    "percent", "average", "mean", "power", "remainder", "divided", "round", "places",
+    "decimals", "larger", "smaller", "double", "raise", "mod",
 ]
 # Python structural tokens (kept as whole pieces for clean code generation).
 PY_TOKENS = [
@@ -46,8 +49,9 @@ PY_TOKENS = [
     "sum(", "max(", "min(", ".upper()", ".lower()", "[::-1]", "== 0", '("', '")',
     ", ", " % 2", " == ", " > ", "** 2", "** 3", ", 0, -1)", "for i in range(",
     "for item in ", "range", "def", "return",
-    # Edit-mode protocol tokens (anchor-based find/replace edits).
-    "EDIT", " EDIT", "@@ ", " ==> ",
+    "round(", "** ", ") / 2", " % ",
+    # Edit-mode protocol tokens (anchor-based directives: replace/delete/move/rename).
+    "EDIT", " EDIT", "@@ ", " ==> ", "DEL ", "MOVE ", "RENAME ",
 ]
 # vocab 512 = 3 specials + 256 reserved byte tokens + ~60 base chars leaves ~190 slots,
 # so force the space-prefixed word forms (what appears mid-sentence) + Python tokens; BPE

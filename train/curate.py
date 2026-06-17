@@ -62,6 +62,92 @@ def valid_edit(window, block):
     return True
 
 
+def _compiles(src):
+    try:
+        compile(src, "<dir>", "exec")
+        return True
+    except SyntaxError:
+        return False
+
+
+def valid_delete(window, block):
+    if not block.startswith("DEL "):
+        return False
+    anchor = block[4:]
+    rows = window.split("\n")
+    hits = [i for i, r in enumerate(rows) if anchor and anchor in r]
+    if len(hits) != 1 or not (window.isascii() and block.isascii()):
+        return False
+    return _compiles("\n".join(r for i, r in enumerate(rows) if i != hits[0]))
+
+
+def valid_rename(window, block):
+    m = re.match(r"^RENAME (.*?) ==> (.*)$", block)
+    if not m:
+        return False
+    old, new = m.group(1), m.group(2)
+    ident = re.compile(r"^[A-Za-z_]\w*$")
+    if not (ident.match(old) and ident.match(new)):
+        return False
+    if len(re.findall(r"\b" + re.escape(old) + r"\b", window)) < 2:
+        return False
+    if not (window.isascii() and block.isascii()):
+        return False
+    return _compiles(re.sub(r"\b" + re.escape(old) + r"\b", new, window))
+
+
+def valid_move(window, block):
+    m = re.match(r"^MOVE (.*?) ==> (.*)$", block)
+    if not m:
+        return False
+    src, dest = m.group(1), m.group(2)
+    rows = window.split("\n")
+    si = [i for i, r in enumerate(rows) if src and src in r]
+    di = [i for i, r in enumerate(rows) if dest and dest in r]
+    if len(si) != 1 or len(di) != 1 or si[0] == di[0]:
+        return False
+    if not (window.isascii() and block.isascii()):
+        return False
+    s = rows.pop(si[0])
+    di2 = [i for i, r in enumerate(rows) if dest in r][0]
+    rows.insert(di2 + 1, s)
+    return _compiles("\n".join(rows))
+
+
+def split_directive(py):
+    """If `py` is `window + "\\n" + directive`, return (window, directive), else None."""
+    if "\n" not in py:
+        return None
+    window, block = py.rsplit("\n", 1)
+    if block.startswith("@@ ") or block.split(" ", 1)[0] in ("DEL", "MOVE", "RENAME"):
+        return window, block
+    return None
+
+
+def valid_directive(window, block):
+    if block.startswith("@@ "):
+        return valid_edit(window, block)
+    if block.startswith("DEL "):
+        return valid_delete(window, block)
+    if block.startswith("RENAME "):
+        return valid_rename(window, block)
+    if block.startswith("MOVE "):
+        return valid_move(window, block)
+    return False
+
+
+def gen_any_edit():
+    """Weighted mix of edit ops: replace 45% / delete 15% / rename 18% / move 22%."""
+    r = random.random()
+    if r < 0.45:
+        return gen_data.gen_edit_example()
+    if r < 0.60:
+        return gen_data.gen_delete_example()
+    if r < 0.78:
+        return gen_data.gen_rename_example()
+    return gen_data.gen_move_example()
+
+
 def load_seeds(path):
     out = []
     if os.path.exists(path):
@@ -124,8 +210,8 @@ def main():
         print(f"boosted weak families with {args.boost} extra examples")
     edits = []
     for _ in range(n_edit):
-        en, window, block = gen_data.gen_edit_example()
-        if valid_edit(window, block):
+        en, window, block = gen_any_edit()
+        if valid_directive(window, block):
             edits.append(("EDIT " + en, window + "\n" + block))
     if n_edit:
         print(f"edit rows: {len(edits)} (target {n_edit})")
@@ -135,9 +221,9 @@ def main():
     rejected = 0
     for en, py in allp:
         en, py = canon(en, py)
-        if "\n@@ " in py:  # EDIT row (window + "\n" + block)
-            window, block = py.rsplit("\n", 1)
-            if not (en.startswith("EDIT ") and valid_edit(window, block)):
+        sd = split_directive(py)
+        if sd:  # EDIT row (window + "\n" + directive)
+            if not (en.startswith("EDIT ") and valid_directive(*sd)):
                 rejected += 1
                 continue
         elif not valid(en, py):
@@ -149,7 +235,7 @@ def main():
         seen.add(k)
         out.append((en, py))
     random.shuffle(out)
-    n_e = sum(1 for _, py in out if "\n@@ " in py)
+    n_e = sum(1 for _, py in out if split_directive(py))
     print(f"kept {len(out)} unique valid pairs ({n_e} edit, rejected {rejected})")
 
     val, train = out[: args.val], out[args.val:]
