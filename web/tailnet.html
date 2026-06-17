@@ -49,7 +49,7 @@ same login URL — no new one each time). This is a Phase-0 spike: it proves reg
 </div>
 
 <script type="module">
-import init, { register_once, forget_node, connect_derp, derp_log } from './tailscale_wasm.js'
+import init, { register_once, forget_node, connect_derp, derp_log, set_model } from './tailscale_wasm.js'
 const $=id=>document.getElementById(id)
 const set=(id,cls,m)=>{const e=$(id);if(e){e.className='s '+cls;e.textContent=m}}
 const LS=localStorage
@@ -117,9 +117,20 @@ async function boot(){
   $('login').onclick=doLogin
   $('forget').onclick=()=>{forget_node();LS.removeItem('ts_auth_url');LS.removeItem('ts_ip');LS.removeItem('ts_authorized');location.reload()}
   let derpStarted=false, lastLog=''
+  async function loadModel(){
+    try{
+      const fb=async u=>new Uint8Array(await (await fetch(u)).arrayBuffer())
+      const [m,t]=await Promise.all([fb('./model.bin'),fb('./tokenizer.bin')])
+      set_model(m,t)
+      const e=document.createElement('div');e.className='s ok';e.style.marginTop='.4rem'
+      e.textContent='🧠 tiny LLM loaded on the node — open http://'+(LS.ts_ip||'<node>')+'/ from another device for the full simulator'
+      $('derpbox').appendChild(e)
+    }catch(e){/* model optional; fast-paths still work */}
+  }
   $('derp').onclick=()=>{
     if(derpStarted)return;derpStarted=true;$('derp').disabled=true
     connect_derp('derp1f.tailscale.com')  // loops; resolves only on disconnect
+    loadModel()                            // so the node can answer /ask (English→Python)
     // Only rewrite the DOM when the text actually changed — otherwise a 1 s overwrite
     // keeps killing text selection on mobile (can't copy). Keep scroll only if at bottom.
     setInterval(()=>{const t=derp_log();if(t&&t!==lastLog){lastLog=t;const e=$('derplog');const atBottom=e.scrollHeight-e.scrollTop-e.clientHeight<24;e.textContent=t;if(atBottom)e.scrollTop=1e9}},1000)

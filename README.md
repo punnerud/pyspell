@@ -223,10 +223,15 @@ and it comes **online with a `100.x` address**. Your node keys live in *your* br
 `Ephemeral`, so it auto-cleans when you close the tab). Status:
 
 - **Control plane — done & live:** the tab registers and shows online (verified: `100.100.43.12`).
-- **Data plane (DERP) — in progress:** "Connect DERP" holds the relay and logs peer packets
-  arriving (open your node's IP from your phone to see them).
-- **Inbound serving — next:** WireGuard-decrypt those packets and answer them with the
-  in-browser PySpell server, so your phone reaches your *simulated ESP32* over Tailscale.
+- **Data plane — done & live:** DERP-over-WebSocket + the WireGuard responder, with RTO
+  retransmit, so packets flow reliably.
+- **Serving the simulated ESP32 — done & live:** open `http://<node>/` from any tailnet
+  device and you get the **full simulator** — type English → the tiny LLM (running on the
+  node) writes Python → it runs in the sandbox → a stylized ESP32 reacts (screen + LED).
+  Deterministic cases (arithmetic/device/strings) run via the browser fast-paths and
+  `/eval`; everything else asks the on-node model via `/ask`. (`curl http://<node>/run -d
+  '21*2'` → `42`.) The whole loop — peer → Tailscale → DERP → browser tab → WireGuard →
+  PySpell/LLM → reply — runs with no hardware, no cloud, served from static Pages.
 
 Note: a public HTTPS page **can't** reach a *real* device's plain-HTTP `100.x` (mixed
 content) — this works because the node *is* the browser tab. Full write-up: [`tech.md`](tech.md).
